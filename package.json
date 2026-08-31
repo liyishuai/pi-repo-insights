@@ -1,0 +1,48 @@
+{
+  "name": "pi-repo-insights",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Repository-level insights from Pi session history",
+  "license": "MPL-2.0",
+  "homepage": "https://github.com/liyishuai/pi-repo-insights",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liyishuai/pi-repo-insights.git"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "repository-analysis",
+    "session-analysis",
+    "github",
+    "developer-productivity"
+  ],
+  "files": [
+    "extensions",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/repo-insights.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+}
