@@ -1,149 +1,169 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import type {
+	PromptClassification,
+	PromptKind,
 	RepoInsightsReport,
-	RepositoryFacts,
-	WorkspaceFacts,
 } from "./types.ts";
 
-function code(value: string): string {
-	return `\`${value.replaceAll("`", "\\`")}\``;
+const KIND_ORDER: PromptKind[] = [
+	"request",
+	"steering",
+	"response",
+	"other",
+	"unclear",
+];
+
+function inline(value: string): string {
+	return value
+		.replace(/\\/g, "\\\\")
+		.replace(/\|/g, "\\|")
+		.replace(/\r?\n/g, " ");
 }
 
-function tableCell(value: string): string {
-	return value.replaceAll("|", "\\|").replaceAll("\n", " ");
+function label(value: string): string {
+	return value
+		.split("_")
+		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+		.join(" ");
 }
 
-function repositoryLabel(repository: RepositoryFacts): string {
-	return repository.github ?? repository.name;
+function repositories(classification: PromptClassification): string {
+	return classification.repositories.length
+		? classification.repositories
+				.map((repository) => `\`${repository}\``)
+				.join(", ")
+		: "Unresolved";
 }
 
-function operationSummary(workspace: WorkspaceFacts): string {
-	const parts = [
-		["run observations", workspace.operationCounts.github_run_observation],
-		["workflow dispatches", workspace.operationCounts.github_workflow_dispatch],
-		["PR inspections", workspace.operationCounts.github_pr_inspection],
-		["issue edits", workspace.operationCounts.github_issue_edit],
-		["test executions", workspace.operationCounts.test_execution],
-	] as const;
-	return (
-		parts
-			.flatMap(([label, count]) => (count > 0 ? [`${count} ${label}`] : []))
-			.join(", ") || "none detected"
-	);
-}
-
-function renderWorkspaces(report: RepoInsightsReport): string[] {
-	if (report.workspaces.length === 0) return ["No workspaces were resolved."];
-	const lines = [
-		"| Workspace | Sessions | Git root | Repositories (local/all) | Observed operations |",
-		"|---|---:|:---:|---:|---|",
-	];
-	for (const workspace of report.workspaces) {
-		lines.push(
-			`| ${tableCell(code(workspace.cwd))} | ${workspace.sessionCount} | ${workspace.isGitRepository ? "yes" : "no"} | ${workspace.localRepositoryCount}/${workspace.repositories.length} | ${tableCell(operationSummary(workspace))} |`,
-		);
-	}
-	return lines;
-}
-
-function renderRepositories(report: RepoInsightsReport): string[] {
-	if (report.repositories.length === 0) return ["No repositories were resolved."];
-	const lines = [
-		"| Repository | Sessions | Local | Modules | Test-like files | Workflows (manual/reusable) | Validation entrypoints |",
-		"|---|---:|:---:|---:|---:|---:|---|",
-	];
-	for (const repository of report.repositories) {
-		const workflows = `${repository.workflows.count} (${repository.workflows.manualDispatchCount}/${repository.workflows.reusableWorkflowCount})`;
-		const entrypoints = repository.validationEntrypoints.length
-			? repository.validationEntrypoints.slice(0, 4).map(code).join(", ")
-			: "none detected";
-		lines.push(
-			`| ${tableCell(repositoryLabel(repository))} | ${repository.activity.sessionIds.length} | ${repository.root ? "yes" : "no"} | ${repository.moduleCount} | ${repository.testFileCount}${repository.fileScanTruncated ? "+" : ""} | ${workflows} | ${tableCell(entrypoints)} |`,
-		);
-	}
-	return lines;
-}
-
-function renderDependencies(report: RepoInsightsReport): string[] {
-	if (report.dependencyEdges.length === 0) {
-		return ["No cross-repository dependency edges were resolved from local manifests."];
-	}
-	const limit = 100;
-	const lines = [
-		"| From | To | Version | Manifest |",
-		"|---|---|---|---|",
-	];
-	for (const edge of report.dependencyEdges.slice(0, limit)) {
-		lines.push(
-			`| ${tableCell(edge.from)} | ${tableCell(edge.to)} | ${tableCell(code(edge.version))} | ${tableCell(code(edge.manifest))} |`,
-		);
-	}
-	if (report.dependencyEdges.length > limit) {
-		lines.push(
-			`\n_${report.dependencyEdges.length - limit} additional edges are present in the JSON report._`,
-		);
-	}
-	return lines;
-}
-
-function renderOpportunities(report: RepoInsightsReport): string[] {
-	if (report.opportunities.length === 0) {
-		return [
-			"No opportunity crossed the deterministic evidence thresholds. This is not a claim that the repositories need no improvement.",
-		];
-	}
-	const lines: string[] = [];
-	for (const [index, opportunity] of report.opportunities.entries()) {
-		lines.push(
-			`### ${index + 1}. ${opportunity.title}`,
-			"",
-			`**Scope:** ${code(opportunity.scope)}  `,
-			`**Confidence:** ${opportunity.confidence}`,
-			"",
-			"**Evidence**",
-			"",
-			...opportunity.evidence.map((item) => `- ${item}`),
-			"",
-			"**Repository-level action**",
-			"",
-			opportunity.recommendation,
-			"",
-		);
-	}
-	return lines;
+function kindCounts(
+	classifications: PromptClassification[],
+): Record<PromptKind, number> {
+	return {
+		request: classifications.filter((item) => item.kind === "request").length,
+		steering: classifications.filter((item) => item.kind === "steering").length,
+		response: classifications.filter((item) => item.kind === "response").length,
+		other: classifications.filter((item) => item.kind === "other").length,
+		unclear: classifications.filter((item) => item.kind === "unclear").length,
+	};
 }
 
 export function renderMarkdown(report: RepoInsightsReport): string {
-	return [
-		"# Pi Repository Insights",
+	const lines: string[] = [];
+	const counts = kindCounts(report.classifications);
+	lines.push("# Pi Repository Insights", "");
+	lines.push(`Generated: ${report.generatedAt}`);
+	lines.push(`Classifier model: \`${report.classifierModel}\``);
+	lines.push(`Analysis model: \`${report.analysisModel}\``);
+	lines.push(
+		`Sessions: ${report.sessions.analyzed} analyzed / ${report.sessions.discovered} discovered (${report.sessions.skipped} skipped)`,
+	);
+	lines.push(
+		`Prompts: ${report.sessions.promptsClassified} classified / ${report.sessions.promptsAnalyzed} submitted`,
+	);
+	if (report.sessions.promptInputTruncated) {
+		lines.push(
+			"Input cap reached: yes; the report does not claim complete prompt coverage.",
+		);
+	}
+	lines.push(
 		"",
-		`Generated: ${report.generatedAt}`,
+		"> Classification uses only chronological user prompts. Repository and tool-path facts are attribution only, not behavioral evidence.",
+		"> Prompt wording is never written to this report; all descriptions below are model-generated paraphrases.",
 		"",
-		`Analyzed ${report.sessions.analyzed} of ${report.sessions.discovered} discovered sessions; ${report.sessions.skipped} were skipped or outside the selected window.`,
-		"",
-		"> Session elapsed time is deliberately not scored. Waiting, pauses, monitoring, and sustained context can all make a session long without making it inefficient.",
-		"",
-		"## Workspaces",
-		"",
-		...renderWorkspaces(report),
-		"",
-		"## Repositories",
-		"",
-		...renderRepositories(report),
-		"",
-		"A trailing `+` on the test-like file count means the bounded repository scan reached its file limit.",
-		"",
-		"## Cross-repository dependency edges",
-		"",
-		...renderDependencies(report),
-		"",
-		"## Evidence-backed opportunities",
-		"",
-		...renderOpportunities(report),
-		"## Methodology",
-		"",
-		...report.methodology.map((item) => `- ${item}`),
-		"",
-	].join("\n");
+	);
+
+	lines.push("## Classification summary", "");
+	lines.push("| Kind | Prompts | Meaning |", "|---|---:|---|");
+	const meanings: Record<PromptKind, string> = {
+		request: "A new or additive desired outcome, order, preference, or question",
+		steering:
+			"A correction, rejection, redirection, or constraint prompted by current agent behavior",
+		response:
+			"Information, approval, or a decision supplied in response to the agent",
+		other:
+			"Acknowledgement, status-only content, or content outside the primary classes",
+		unclear: "The classifier did not return a usable class",
+	};
+	for (const kind of KIND_ORDER) {
+		lines.push(`| ${label(kind)} | ${counts[kind]} | ${meanings[kind]} |`);
+	}
+	lines.push("");
+
+	lines.push("### By session", "");
+	lines.push(
+		"| Session | Requests | Steering | Responses | Other | Unclear |",
+		"|---|---:|---:|---:|---:|---:|",
+	);
+	const sessionIds = [
+		...new Set(
+			report.classifications.map((classification) => classification.sessionId),
+		),
+	];
+	for (const sessionId of sessionIds) {
+		const sessionCounts = kindCounts(
+			report.classifications.filter(
+				(classification) => classification.sessionId === sessionId,
+			),
+		);
+		lines.push(
+			`| \`${sessionId.slice(0, 8)}\` | ${sessionCounts.request} | ${sessionCounts.steering} | ${sessionCounts.response} | ${sessionCounts.other} | ${sessionCounts.unclear} |`,
+		);
+	}
+	if (sessionIds.length === 0)
+		lines.push("| _No prompts_ | 0 | 0 | 0 | 0 | 0 |");
+	lines.push("");
+
+	lines.push("## Repository attribution", "");
+	lines.push(
+		"| Repository | Sessions | Local checkouts | Canonical root |",
+		"|---|---:|---:|---|",
+	);
+	for (const repository of report.repositories) {
+		lines.push(
+			`| \`${inline(repository.key)}\` | ${repository.sessionIds.length} | ${repository.checkoutCount} | ${repository.root ? `\`${inline(repository.root)}\`` : "Remote reference only"} |`,
+		);
+	}
+	if (report.repositories.length === 0) {
+		lines.push("| _No repository attribution resolved_ | 0 | 0 | — |");
+	}
+	lines.push("");
+
+	lines.push("## Steering detected", "");
+	const steering = report.classifications.filter(
+		(classification) => classification.kind === "steering",
+	);
+	for (const classification of steering) {
+		lines.push(
+			`### ${label(classification.steeringCategory ?? "course_correction")} — session \`${classification.sessionId.slice(0, 8)}\`, prompt ${classification.promptIndex}`,
+			"",
+			`- **Repositories:** ${repositories(classification)}`,
+			`- **Confidence:** ${classification.confidence}`,
+			`- **What the user signaled:** ${inline(classification.paraphrase)}`,
+			`- **Expected adjustment:** ${inline(classification.expectedBehavior ?? "Follow the user's correction.")}`,
+			"",
+		);
+	}
+	if (steering.length === 0)
+		lines.push("No steering prompts were classified.", "");
+
+	lines.push("## Repeated steering themes", "");
+	for (const theme of report.themes) {
+		lines.push(
+			`### ${inline(theme.title)}`,
+			"",
+			`- **Prompt-derived pattern:** ${inline(theme.summary)}`,
+			`- **Steering prompts:** ${theme.promptIds.length}`,
+			`- **Repositories:** ${theme.repositories.length ? theme.repositories.map((repository) => `\`${inline(repository)}\``).join(", ") : "Unresolved"}`,
+			`- **Repository-level action:** ${theme.repositoryAction ? inline(theme.repositoryAction) : "None inferred. Treat this as agent-behavior feedback rather than inventing a repository change."}`,
+			"",
+		);
+	}
+	if (report.themes.length === 0)
+		lines.push("No repeated steering themes were produced.", "");
+
+	lines.push("## Methodology and privacy", "");
+	for (const item of report.methodology) lines.push(`- ${item}`);
+	lines.push("");
+	return `${lines.join("\n")}\n`;
 }

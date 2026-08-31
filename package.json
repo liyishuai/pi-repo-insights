@@ -1,8 +1,8 @@
 {
   "name": "pi-repo-insights",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Repository-level insights from Pi session history",
+  "description": "Classify user requests and corrective steering in Pi session history",
   "license": "MPL-2.0",
   "homepage": "https://github.com/liyishuai/pi-repo-insights",
   "repository": {
@@ -12,32 +12,37 @@
   "keywords": [
     "pi-package",
     "pi-extension",
-    "repository-analysis",
+    "prompt-analysis",
     "session-analysis",
-    "github",
+    "agent-feedback",
     "developer-productivity"
   ],
   "files": [
     "extensions",
+    "skills",
     "src",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck"
   },
   "pi": {
     "extensions": [
       "./extensions/repo-insights.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@earendil-works/pi-tui": "^0.84.4",
     "@types/node": "^24.10.0",
     "typescript": "^5.9.3"
   },

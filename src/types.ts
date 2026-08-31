@@ -1,19 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
-const OPERATION_NAMES = [
-	"github_run_observation",
-	"github_workflow_dispatch",
-	"github_pr_inspection",
-	"github_issue_edit",
-	"git_status",
-	"git_diff",
-	"test_execution",
-	"worktree_management",
-] as const;
-
-type OperationName = (typeof OPERATION_NAMES)[number];
-
-export type OperationCounts = Record<OperationName, number>;
+export type PromptRecord = {
+	index: number;
+	timestamp?: string;
+	text: string;
+};
 
 export type SessionEvidence = {
 	sessionId: string;
@@ -21,13 +12,9 @@ export type SessionEvidence = {
 	cwd: string;
 	startedAt: string;
 	modifiedAt: string;
-	toolCalls: number;
-	toolErrors: number;
-	operationCounts: OperationCounts;
+	prompts: PromptRecord[];
 	githubRepositories: string[];
 	referencedPaths: string[];
-	modifiedPaths: string[];
-	workspaceRootErrors: number;
 };
 
 export type SessionSource = {
@@ -38,111 +25,76 @@ export type SessionSource = {
 	modified: Date;
 };
 
-export type RepositoryActivity = {
-	sessionIds: string[];
-	pathReferences: number;
-	modifiedPathReferences: number;
-	githubReferences: number;
-};
-
-type WorkflowFileFacts = {
-	path: string;
-	lines: number;
-};
-
-export type WorkflowFacts = {
-	count: number;
-	totalLines: number;
-	manualDispatchCount: number;
-	reusableWorkflowCount: number;
-	checkoutUses: number;
-	largest: WorkflowFileFacts[];
-};
-
-export type DependencyReference = {
-	target: string;
-	version: string;
-	manifest: string;
-	isPrerelease: boolean;
-};
-
-export type RepositoryFacts = {
+export type RepositoryAttribution = {
 	key: string;
 	name: string;
 	root?: string;
-	checkoutRoots: string[];
-	remote?: string;
 	github?: string;
-	activity: RepositoryActivity;
-	manifests: string[];
-	modules: string[];
-	moduleCount: number;
-	testFileCount: number;
-	scannedFileCount: number;
-	fileScanTruncated: boolean;
-	validationEntrypoints: string[];
-	workflows: WorkflowFacts;
-	dependencies: DependencyReference[];
+	checkoutCount: number;
+	sessionIds: string[];
 };
 
-export type WorkspaceFacts = {
-	cwd: string;
-	sessionCount: number;
-	isGitRepository: boolean;
+export type PromptKind =
+	| "request"
+	| "steering"
+	| "response"
+	| "other"
+	| "unclear";
+
+export type SteeringCategory =
+	| "course_correction"
+	| "scope_reassertion"
+	| "frustration"
+	| "missed_requirement"
+	| "unwanted_action"
+	| "premature_completion"
+	| "evidence_challenge";
+
+export type PromptClassification = {
+	id: string;
+	sessionId: string;
+	promptIndex: number;
+	kind: PromptKind;
+	paraphrase: string;
+	confidence: "high" | "medium";
 	repositories: string[];
-	localRepositories: string[];
-	localRepositoryCount: number;
-	operationCounts: OperationCounts;
-	workspaceRootErrors: number;
+	steeringCategory?: SteeringCategory;
+	expectedBehavior?: string;
 };
 
-export type DependencyEdge = {
-	from: string;
-	to: string;
-	version: string;
-	manifest: string;
-	isPrerelease: boolean;
-};
-
-export type Opportunity = {
+export type SteeringTheme = {
 	id: string;
 	title: string;
-	scope: string;
-	confidence: "high" | "medium";
-	evidence: string[];
-	recommendation: string;
+	summary: string;
+	promptIds: string[];
+	repositories: string[];
+	repositoryAction?: string;
 };
 
 export type ReportOptions = {
 	sinceDays: number;
 	maxSessions: number;
+	classifierModel?: string;
+	analysisModel?: string;
 };
 
 export type RepoInsightsReport = {
-	schemaVersion: 1;
+	schemaVersion: 2;
 	generatedAt: string;
 	options: ReportOptions;
+	classifierModel: string;
+	analysisModel: string;
 	sessions: {
 		discovered: number;
 		analyzed: number;
 		skipped: number;
+		promptsAnalyzed: number;
+		promptsClassified: number;
+		promptCharactersSubmitted: number;
+		promptInputTruncated: boolean;
 	};
-	workspaces: WorkspaceFacts[];
-	repositories: RepositoryFacts[];
-	dependencyEdges: DependencyEdge[];
-	opportunities: Opportunity[];
+	repositories: RepositoryAttribution[];
+	classifications: PromptClassification[];
+	themes: SteeringTheme[];
 	methodology: string[];
 };
-
-export function emptyOperationCounts(): OperationCounts {
-	return {
-		github_run_observation: 0,
-		github_workflow_dispatch: 0,
-		github_pr_inspection: 0,
-		github_issue_edit: 0,
-		git_status: 0,
-		git_diff: 0,
-		test_execution: 0,
-		worktree_management: 0,
-	};
-}

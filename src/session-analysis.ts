@@ -2,12 +2,7 @@
 
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
-import {
-	emptyOperationCounts,
-	type OperationCounts,
-	type SessionEvidence,
-	type SessionSource,
-} from "./types.ts";
+import type { PromptRecord, SessionEvidence, SessionSource } from "./types.ts";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -31,9 +26,6 @@ const PATH_KEYS = new Set([
 	"root",
 ]);
 
-const TEST_COMMAND =
-	/(?:^|[;&|\s])(?:go\s+test|npm\s+(?:run\s+)?test|pnpm\s+(?:run\s+)?test|yarn\s+(?:run\s+)?test|bun\s+test|pytest|python(?:3)?\s+-m\s+(?:pytest|unittest)|cargo\s+test|mvn\s+test|gradle\s+test)(?:\s|$)/i;
-
 function asRecord(value: unknown): UnknownRecord | undefined {
 	return value !== null && typeof value === "object"
 		? (value as UnknownRecord)
@@ -53,131 +45,165 @@ function textFromContent(content: unknown): string {
 		.join("\n");
 }
 
+function normalizePath(value: string, cwd: string): string | undefined {
+	const trimmed = value.trim().replace(/^['"]|['"]$/g, "");
+	if (
+		!trimmed ||
+		trimmed.includes("\n") ||
+		trimmed.startsWith("-") ||
+		trimmed.includes("$") ||
+		trimmed.includes("*") ||
+		trimmed.includes("{")
+	) {
+		return undefined;
+	}
+	if (trimmed === "~") return homedir();
+	if (trimmed.startsWith("~/")) return resolve(homedir(), trimmed.slice(2));
+	return isAbsolute(trimmed) ? resolve(trimmed) : resolve(cwd, trimmed);
+}
+
 export function normalizeGitHubRepository(value: string): string | undefined {
 	const cleaned = value
 		.trim()
-		.replace(/^['"(<]+/, "")
-		.replace(/[>'"),.;:]+$/, "")
-		.replace(/\.git$/, "");
-	const match = cleaned.match(
-		/^([A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)\/([A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)$/,
-	);
-	if (!match) return undefined;
-	return `${match[1]}/${match[2]}`;
+		.replace(/^git@github\.com:/i, "")
+		.replace(/^https?:\/\/(?:api\.)?github\.com\/(?:repos\/)?/i, "")
+		.replace(/^ssh:\/\/git@github\.com\//i, "")
+		.replace(/\.git$/i, "")
+		.replace(/[?#].*$/, "")
+		.replace(/^\/+|\/+$/g, "");
+	const parts = cleaned.split("/");
+	if (parts.length < 2) return undefined;
+	const [owner, repository] = parts;
+	if (!owner || !repository) return undefined;
+	if (
+		!/^[A-Za-z0-9_.-]+$/.test(owner) ||
+		!/^[A-Za-z0-9_.-]+$/.test(repository)
+	) {
+		return undefined;
+	}
+	return `${owner}/${repository}`;
 }
 
 export function extractGitHubRepositories(text: string): string[] {
 	const repositories = new Set<string>();
 	const patterns = [
-		/https?:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/gi,
-		/https?:\/\/api\.github\.com\/repos\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/gi,
-		/git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/gi,
-		/(?:--repo|-R)\s+['"]?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/g,
+		/https?:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/gi,
+		/https?:\/\/api\.github\.com\/repos\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/gi,
+		/git@github\.com:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\.git)?/gi,
+		/ssh:\/\/git@github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\.git)?/gi,
+		/(?:--repo|-R)\s+([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/gi,
 	];
-
 	for (const pattern of patterns) {
 		for (const match of text.matchAll(pattern)) {
-			const candidate = match[2] ? `${match[1]}/${match[2]}` : match[1];
-			const normalized = candidate
-				? normalizeGitHubRepository(candidate)
+			const repository = match[1]
+				? normalizeGitHubRepository(match[1])
 				: undefined;
-			if (normalized) repositories.add(normalized);
+			if (repository) repositories.add(repository);
 		}
 	}
-
-	return [...repositories];
-}
-
-function normalizePath(candidate: string, cwd: string): string | undefined {
-	let value = candidate.trim().replace(/^['"]|['"]$/g, "");
-	value = value.replace(/[),;]+$/, "");
-	if (!value || /[*?{}$`]/.test(value) || value.startsWith("http")) {
-		return undefined;
-	}
-	if (value === "~") value = homedir();
-	else if (value.startsWith("~/")) value = resolve(homedir(), value.slice(2));
-	else if (!isAbsolute(value)) value = resolve(cwd, value);
-	return value;
+	return [...repositories].sort((a, b) => a.localeCompare(b));
 }
 
 function collectPathArguments(
 	value: unknown,
 	cwd: string,
 	paths: Set<string>,
-	key?: string,
+	depth = 0,
 ): void {
-	if (typeof value === "string") {
-		if (!key || !PATH_KEYS.has(key)) return;
-		const normalized = normalizePath(value, cwd);
-		if (normalized) paths.add(normalized);
-		return;
-	}
+	if (depth > 4) return;
 	if (Array.isArray(value)) {
-		for (const item of value) collectPathArguments(item, cwd, paths, key);
+		for (const item of value) collectPathArguments(item, cwd, paths, depth + 1);
 		return;
 	}
 	const record = asRecord(value);
 	if (!record) return;
-	for (const [childKey, child] of Object.entries(record)) {
-		collectPathArguments(child, cwd, paths, childKey);
+	for (const [key, nested] of Object.entries(record)) {
+		if (PATH_KEYS.has(key)) {
+			const values = Array.isArray(nested) ? nested : [nested];
+			for (const candidate of values) {
+				if (typeof candidate !== "string") continue;
+				const path = normalizePath(candidate, cwd);
+				if (path) paths.add(path);
+			}
+		}
+		if (typeof nested === "object" && nested !== null) {
+			collectPathArguments(nested, cwd, paths, depth + 1);
+		}
 	}
 }
 
 function extractCommandPaths(command: string, cwd: string): string[] {
 	const paths = new Set<string>();
-	const absolutePattern = /(?:^|[\s'"=(:])((?:\/[^/\s'"|;&,)]+)+)/g;
-	for (const match of command.matchAll(absolutePattern)) {
-		const normalized = match[1] ? normalizePath(match[1], cwd) : undefined;
-		if (normalized) paths.add(normalized);
-	}
-
-	const workingDirectoryPatterns = [
-		/(?:^|[;&|]\s*)cd\s+(['"]?[^\s;&|]+['"]?)/g,
-		/\bgit\s+-C\s+(['"]?[^\s;&|]+['"]?)/g,
+	const patterns = [
+		/(?:^|[;&|]\s*|\s)cd\s+(?:--\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g,
+		/(?:^|\s)-C\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g,
+		/(?:^|\s)--(?:cwd|repo-dir|work-tree|git-dir)[=\s]+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g,
 	];
-	for (const pattern of workingDirectoryPatterns) {
+	for (const pattern of patterns) {
 		for (const match of command.matchAll(pattern)) {
-			const normalized = match[1] ? normalizePath(match[1], cwd) : undefined;
-			if (normalized) paths.add(normalized);
+			const value = match[1] ?? match[2] ?? match[3];
+			if (!value) continue;
+			const path = normalizePath(value, cwd);
+			if (path) paths.add(path);
 		}
+	}
+	for (const match of command.matchAll(/(?:^|\s)(\/(?:[^\s'";&|])+)/g)) {
+		const path = match[1] ? normalizePath(match[1], cwd) : undefined;
+		if (path) paths.add(path);
 	}
 	return [...paths];
 }
 
-function classifyCommand(
-	command: string,
-	counts: OperationCounts,
-): void {
-	if (/\bgh\s+run\s+(?:view|list|watch)\b/i.test(command)) {
-		counts.github_run_observation++;
+function promptTimestamp(message: UnknownRecord): string | undefined {
+	if (
+		typeof message.timestamp === "number" &&
+		Number.isFinite(message.timestamp)
+	) {
+		return new Date(message.timestamp).toISOString();
 	}
-	if (/\bgh\s+workflow\s+run\b/i.test(command)) {
-		counts.github_workflow_dispatch++;
+	if (typeof message.timestamp === "string") {
+		const timestamp = new Date(message.timestamp);
+		if (!Number.isNaN(timestamp.getTime())) return timestamp.toISOString();
 	}
-	if (/\bgh\s+pr\s+(?:view|checks|diff|list|status)\b/i.test(command)) {
-		counts.github_pr_inspection++;
-	}
-	if (/\bgh\s+issue\s+edit\b/i.test(command)) {
-		counts.github_issue_edit++;
-	}
-	if (/\bgit(?:\s+-C\s+\S+)?\s+status\b/i.test(command)) {
-		counts.git_status++;
-	}
-	if (/\bgit(?:\s+-C\s+\S+)?\s+diff\b/i.test(command)) {
-		counts.git_diff++;
-	}
-	if (TEST_COMMAND.test(command)) counts.test_execution++;
-	if (/\bgit\s+worktree\s+(?:add|remove|prune|list)\b/i.test(command)) {
-		counts.worktree_management++;
-	}
+	return undefined;
 }
 
-export function mergeOperationCounts(
-	target: OperationCounts,
-	source: OperationCounts,
+function collectToolAttribution(
+	message: UnknownRecord,
+	cwd: string,
+	seenToolCalls: Set<string>,
+	referencedPaths: Set<string>,
+	githubRepositories: Set<string>,
+	anonymousIndex: { value: number },
 ): void {
-	for (const key of Object.keys(target) as Array<keyof OperationCounts>) {
-		target[key] += source[key];
+	if (!Array.isArray(message.content)) return;
+	for (const rawBlock of message.content) {
+		const block = asRecord(rawBlock) as ContentBlock | undefined;
+		if (block?.type !== "toolCall" || typeof block.name !== "string") continue;
+		const id =
+			typeof block.id === "string"
+				? block.id
+				: `anonymous-${anonymousIndex.value++}`;
+		if (seenToolCalls.has(id)) continue;
+		seenToolCalls.add(id);
+		const args = block.arguments ?? {};
+		collectPathArguments(args, cwd, referencedPaths);
+		let serialized = "";
+		try {
+			serialized = JSON.stringify(args);
+		} catch {
+			// Session arguments should be JSON, but attribution can continue without them.
+		}
+		for (const repository of extractGitHubRepositories(serialized)) {
+			githubRepositories.add(repository);
+		}
+		if (block.name !== "bash") continue;
+		const command = typeof args.command === "string" ? args.command : "";
+		for (const repository of extractGitHubRepositories(command)) {
+			githubRepositories.add(repository);
+		}
+		for (const path of extractCommandPaths(command, cwd))
+			referencedPaths.add(path);
 	}
 }
 
@@ -185,80 +211,38 @@ export function analyzeSessionEntries(
 	entries: unknown[],
 	source: SessionSource,
 ): SessionEvidence {
-	const operationCounts = emptyOperationCounts();
+	const prompts: PromptRecord[] = [];
 	const githubRepositories = new Set<string>();
 	const referencedPaths = new Set<string>();
-	const modifiedPaths = new Set<string>();
 	const seenToolCalls = new Set<string>();
-	let toolCalls = 0;
-	let toolErrors = 0;
-	let workspaceRootErrors = 0;
-	let anonymousToolCallIndex = 0;
+	const anonymousIndex = { value: 0 };
 
 	for (const rawEntry of entries) {
 		const entry = asRecord(rawEntry);
 		if (entry?.type !== "message") continue;
 		const message = asRecord(entry.message);
 		if (!message) continue;
-
 		if (message.role === "user") {
-			for (const repository of extractGitHubRepositories(
-				textFromContent(message.content),
-			)) {
+			const text = textFromContent(message.content).trim();
+			if (!text) continue;
+			const prompt: PromptRecord = { index: prompts.length + 1, text };
+			const timestamp = promptTimestamp(message);
+			if (timestamp) prompt.timestamp = timestamp;
+			prompts.push(prompt);
+			for (const repository of extractGitHubRepositories(text)) {
 				githubRepositories.add(repository);
 			}
+			continue;
 		}
-
-		if (message.role === "assistant" && Array.isArray(message.content)) {
-			for (const rawBlock of message.content) {
-				const block = asRecord(rawBlock) as ContentBlock | undefined;
-				if (block?.type !== "toolCall" || typeof block.name !== "string") {
-					continue;
-				}
-				const toolCallId =
-					typeof block.id === "string"
-						? block.id
-						: `anonymous-${anonymousToolCallIndex++}`;
-				if (seenToolCalls.has(toolCallId)) continue;
-				seenToolCalls.add(toolCallId);
-				toolCalls++;
-
-				const args = block.arguments ?? {};
-				collectPathArguments(args, source.cwd, referencedPaths);
-				const serializedArgs = JSON.stringify(args);
-				for (const repository of extractGitHubRepositories(serializedArgs)) {
-					githubRepositories.add(repository);
-				}
-
-				if (block.name === "bash") {
-					const command =
-						typeof args.command === "string" ? args.command : "";
-					classifyCommand(command, operationCounts);
-					for (const repository of extractGitHubRepositories(command)) {
-						githubRepositories.add(repository);
-					}
-					for (const candidatePath of extractCommandPaths(
-						command,
-						source.cwd,
-					)) {
-						referencedPaths.add(candidatePath);
-					}
-				}
-
-				if (block.name === "edit" || block.name === "write") {
-					const pathValue = args.path ?? args.file_path;
-					if (typeof pathValue === "string") {
-						const normalized = normalizePath(pathValue, source.cwd);
-						if (normalized) modifiedPaths.add(normalized);
-					}
-				}
-			}
-		}
-
-		if (message.role === "toolResult" && message.isError === true) {
-			toolErrors++;
-			const errorText = textFromContent(message.content);
-			if (/not a git repository/i.test(errorText)) workspaceRootErrors++;
+		if (message.role === "assistant") {
+			collectToolAttribution(
+				message,
+				source.cwd,
+				seenToolCalls,
+				referencedPaths,
+				githubRepositories,
+				anonymousIndex,
+			);
 		}
 	}
 
@@ -268,16 +252,12 @@ export function analyzeSessionEntries(
 		cwd: source.cwd,
 		startedAt: source.created.toISOString(),
 		modifiedAt: source.modified.toISOString(),
-		toolCalls,
-		toolErrors,
-		operationCounts,
-		githubRepositories: [...githubRepositories].sort((a, b) => a.localeCompare(b)),
+		prompts,
+		githubRepositories: [...githubRepositories].sort((a, b) =>
+			a.localeCompare(b),
+		),
 		referencedPaths: [...referencedPaths]
 			.slice(0, 2_000)
 			.sort((a, b) => a.localeCompare(b)),
-		modifiedPaths: [...modifiedPaths]
-			.slice(0, 1_000)
-			.sort((a, b) => a.localeCompare(b)),
-		workspaceRootErrors,
 	};
 }

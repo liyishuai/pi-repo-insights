@@ -1,8 +1,8 @@
 # pi-repo-insights
 
-A local, deterministic Pi package that turns historical Pi sessions into evidence-backed **repository-level** improvement opportunities.
+A Pi package that reviews historical **user prompts**, distinguishes new requests from corrective steering, and maps prompt-derived feedback to the repositories involved.
 
-It is designed for multi-repository engineering work where agents repeatedly have to rediscover repository layout, reconcile CI state, trace dependency promotion, or reconstruct validation commands. Session duration is deliberately treated as neutral: a long session can represent useful sustained context, waiting, or monitoring.
+The central question is: _where did the user indicate that the agent's current approach was wrong?_ A forceful initial order is still a request; a later prompt that rejects, corrects, narrows, stops, or replaces the work is steering.
 
 ## Install
 
@@ -28,57 +28,66 @@ Reload Pi after installation, then run `/repo-insights`.
 
 ## Usage
 
-```text
-/repo-insights [options]
+Run one command with no arguments:
 
-Options:
-  --since <N>d          Analyze sessions modified in the last N days
-  --max-sessions <N>    Bound session loading (default: 200, maximum: 2000)
-  --output <directory>  Write report.md and report.json here
-  -h, --help            Show help
+```text
+/repo-insights
 ```
 
-By default, reports are written to:
+The command opens an interactive configuration panel with four fields:
+
+- **History window** — all history or the last 7, 30, 90, 180, or 365 days;
+- **Session limit** — 25, 50, 100, 200, 500, or 1,000 recent sessions;
+- **Classifier model** — classifies each prompt, defaulting to `openai-codex/gpt-5.3-codex-spark`; and
+- **Analysis model** — groups steering into themes, defaulting to `openai-codex/gpt-5.6-luna`.
+
+Select **Run analysis** in the panel to start. Selections are remembered globally in `~/.pi/agent/repo-insights/config.json` (or the equivalent path under `PI_CODING_AGENT_DIR`). If a preferred model is unavailable, the extension falls back to Pi's active model.
+
+Reports are written to:
 
 ```text
 ~/.pi/agent/repo-insights/report.md
 ~/.pi/agent/repo-insights/report.json
 ```
 
-The Markdown file is for review; the schema-versioned JSON file is intended for follow-on repository automation.
+The Markdown report summarizes class counts, details steering prompts through paraphrases, and groups repeated steering themes. The schema-versioned JSON report contains every included prompt classification.
 
-## What it analyzes
+## Models and classification skill
 
-The command:
+Every included chronological user prompt receives one primary class:
 
-1. Lists local Pi session files and loads the newest bounded set.
-2. Extracts repository evidence from working directories, tool paths, GitHub references, tool failures, and repeated Git/GitHub/test operation categories.
-3. Resolves local Git roots and origin remotes, consolidating temporary worktrees under one repository identity.
-4. Performs bounded local inspection of manifests, test-like files, canonical validation entrypoints, GitHub Actions workflows, and Go dependency edges.
-5. Applies explicit deterministic thresholds and writes Markdown plus JSON reports.
+- **request** — a new or additive order, desired outcome, preference, or question;
+- **steering** — a reaction to current or previous agent behavior that rejects, corrects, redirects, narrows, expands, stops, or replaces the approach;
+- **response** — information, approval, or a choice supplied because the agent asked;
+- **other** — acknowledgement, status-only content, or content outside those classes; or
+- **unclear** — the classifier omitted or malformed the result.
 
-Current opportunity detectors cover:
+If a prompt both redirects the agent and gives a new order, steering takes priority. Steering is further classified as course correction, scope reassertion, frustration, missed requirement, unwanted action, premature completion, or evidence challenge.
 
-- a versioned multi-repository workspace manifest;
-- a structured cross-repository CI status record;
-- schema-validated promotion state that renders tracker prose;
-- automated dependency-closure verification;
-- one CI-parity validation entrypoint per repository; and
-- a typed operations index for large manual-workflow surfaces.
+The classification contract lives in the packaged `repo-insights-classifier` skill at `skills/repo-insights-classifier/SKILL.md`. The extension loads that skill for classification and theme grouping. Pi also discovers it as `/skill:repo-insights-classifier`, so compatible agents can load the same contract.
 
-Recommendations appear only when their evidence thresholds are met. Ordinary failures, token counts, worktree use, and elapsed session time do not independently create findings.
+Classification runs as bounded, stateless model tasks on Spark by default. Validated steering paraphrases are passed to the separate Luna analysis task to group themes and propose repository actions. Prompt batches are limited to 160 prompts and 40,000 prompt characters. A run submits at most 500 prompts and 120,000 prompt characters; the report marks truncated coverage.
+
+## Repository attribution
+
+Repository facts are used only after prompt classification, for attribution:
+
+1. Session working directories and tool path arguments identify candidate local Git roots.
+2. Origin remotes and explicit GitHub references consolidate checkouts under one repository identity.
+3. Prompt classifications inherit the repositories associated with their session.
+4. A repository-level action is emitted only when grouped steering paraphrases directly support a repository-owned script, check, CI contract, schema, or documented interface.
 
 ## Privacy and boundaries
 
-- All analysis runs locally.
-- The extension makes no model calls.
-- It performs no GitHub API calls and no other network requests.
-- Prompt text, assistant prose, full commands, file contents, and tool outputs are not copied into reports.
-- Local paths and repository identities do appear because they are required to resolve repository topology.
-- Repository scans are bounded to 50,000 files per repository and skip common generated/vendor directories and nested Git checkouts.
-- Repository instruction/context files are not inspected, generated, or recommended.
+- Classifier input consists of selected chronological user prompts.
+- Analysis input consists of validated steering paraphrases.
+- Markdown and JSON reports contain paraphrases rather than raw prompt text.
+- Host validation replaces a paraphrase if it copies eight consecutive words from its source prompt.
+- Repository attribution resolves local Git roots and origin remotes without a GitHub API call.
+- Reports include local paths and repository identities for attribution.
+- The packaged skill is the shared classifier contract for the extension and compatible agents.
 
-The current report schema is `schemaVersion: 1`.
+The current report schema is `schemaVersion: 2`.
 
 ## Development
 
@@ -89,18 +98,10 @@ npm ci
 npm run check
 ```
 
-Load the extension directly during development:
+Load the extension directly, then enter `/repo-insights` to inspect the configuration panel and run it:
 
 ```bash
 pi --no-extensions --extension ./extensions/repo-insights.ts
-```
-
-A non-interactive smoke test can exercise the real command without a model call:
-
-```bash
-pi --offline --no-session --no-context-files --no-extensions --no-skills \
-  --extension ./extensions/repo-insights.ts --print \
-  "/repo-insights --max-sessions 1 --output /tmp/pi-repo-insights-check"
 ```
 
 ## License
