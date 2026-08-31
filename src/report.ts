@@ -53,8 +53,9 @@ export function renderMarkdown(report: RepoInsightsReport): string {
 	const counts = kindCounts(report.classifications);
 	lines.push("# Pi Repository Insights", "");
 	lines.push(`Generated: ${report.generatedAt}`);
+	lines.push(`Model catalog: \`${report.options.modelCatalog ?? "all"}\``);
 	lines.push(`Classifier model: \`${report.classifierModel}\``);
-	lines.push(`Analysis model: \`${report.analysisModel}\``);
+	lines.push(`Repository analysis model: \`${report.analysisModel}\``);
 	lines.push(
 		`Sessions: ${report.sessions.analyzed} analyzed / ${report.sessions.discovered} discovered (${report.sessions.skipped} skipped)`,
 	);

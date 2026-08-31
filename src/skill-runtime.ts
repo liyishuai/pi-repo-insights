@@ -375,9 +375,9 @@ export function parseClassificationBatch(
 	});
 }
 
-export function buildThemePrompt(
+export function buildRepositoryAnalysisPrompt(
 	classifications: PromptClassification[],
-	skillInstructions: string,
+	analysisSkill: string,
 ): { prompt: string; refs: Map<string, PromptClassification> } | undefined {
 	const steering = classifications.filter(
 		(classification) => classification.kind === "steering",
@@ -391,10 +391,10 @@ export function buildThemePrompt(
 	});
 	return {
 		refs,
-		prompt: `Apply the packaged skill below in Theme mode. Return only the JSON required by the skill.
+		prompt: `Apply the packaged repository-analysis skill below. Return only the JSON required by the skill.
 
 BEGIN PACKAGED SKILL
-${skillInstructions}
+${analysisSkill}
 END PACKAGED SKILL
 
 BEGIN STEERING CLASSIFICATIONS
@@ -403,7 +403,7 @@ END STEERING CLASSIFICATIONS`,
 	};
 }
 
-export function parseThemes(
+export function parseRepositoryAnalysis(
 	text: string,
 	refs: Map<string, PromptClassification>,
 ): SteeringTheme[] {

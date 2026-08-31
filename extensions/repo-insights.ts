@@ -26,9 +26,11 @@ import {
 	HISTORY_WINDOWS,
 	historyWindowDays,
 	loadInsightsSettings,
+	MODEL_CATALOGS,
 	saveInsightsSettings,
 	SESSION_LIMITS,
 	type InsightsSettings,
+	type ModelCatalog,
 } from "../src/settings.ts";
 
 type ClassifierModel = NonNullable<ExtensionCommandContext["model"]>;
@@ -37,10 +39,14 @@ const CLASSIFIER_SKILL_URL = new URL(
 	"../skills/repo-insights-classifier/SKILL.md",
 	import.meta.url,
 );
+const ANALYZER_SKILL_URL = new URL(
+	"../skills/repo-insights-analyzer/SKILL.md",
+	import.meta.url,
+);
 
-async function loadClassifierSkill(): Promise<string> {
-	const skill = await readFile(CLASSIFIER_SKILL_URL, "utf8");
-	if (!skill.trim()) throw new Error("The packaged classifier skill is empty");
+async function loadPackagedSkill(url: URL, name: string): Promise<string> {
+	const skill = await readFile(url, "utf8");
+	if (!skill.trim()) throw new Error(`The packaged ${name} skill is empty`);
 	return skill;
 }
 
@@ -49,7 +55,7 @@ function progressLines(progress: AnalysisProgress): string[] {
 	if (progress.phase === "sessions") label = "Reading user prompts";
 	if (progress.phase === "repositories") label = "Resolving repository attribution";
 	if (progress.phase === "classification") label = "Classifying requests and steering";
-	if (progress.phase === "themes") label = "Grouping steering themes";
+	if (progress.phase === "themes") label = "Applying repository analysis skill";
 	return [
 		"",
 		"  Pi Repository Insights",
@@ -62,9 +68,20 @@ function modelLabel(model: ClassifierModel): string {
 	return `${model.provider}/${model.id}`;
 }
 
-function availableModels(ctx: ExtensionCommandContext): ClassifierModel[] {
+function availableModels(
+	ctx: ExtensionCommandContext,
+	catalog: ModelCatalog,
+): ClassifierModel[] {
+	const all = [...ctx.modelRegistry.getAvailable()];
+	const scopedLabels = new Set(
+		ctx.scopedModels.map(({ model }) => modelLabel(model)),
+	);
+	const selected =
+		catalog === "scoped" && scopedLabels.size > 0
+			? all.filter((model) => scopedLabels.has(modelLabel(model)))
+			: all;
 	const preferredOrder = ["gpt-5.3-codex-spark", "gpt-5.6-luna"];
-	return [...ctx.modelRegistry.getAvailable()].sort((a, b) => {
+	return selected.sort((a, b) => {
 		const aRank = preferredOrder.indexOf(a.id);
 		const bRank = preferredOrder.indexOf(b.id);
 		const normalizedARank = aRank < 0 ? preferredOrder.length : aRank;
@@ -75,35 +92,47 @@ function availableModels(ctx: ExtensionCommandContext): ClassifierModel[] {
 
 function defaultModel(
 	ctx: ExtensionCommandContext,
+	catalog: ModelCatalog,
 	preferredId: string,
 	role: string,
 ): ClassifierModel {
-	const available = availableModels(ctx);
+	const available = availableModels(ctx, catalog);
 	const preferred =
 		available.find(
 			(model) => modelLabel(model) === `openai-codex/${preferredId}`,
 		) ?? available.find((model) => model.id === preferredId);
 	if (preferred) return preferred;
-	if (ctx.model) return ctx.model;
+	const currentModel = ctx.model;
+	const active = currentModel
+		? available.find((model) => modelLabel(model) === modelLabel(currentModel))
+		: undefined;
+	if (active) return active;
 	if (available[0]) return available[0];
-	throw new Error(`No authenticated ${role} model is available`);
+	throw new Error(`No authenticated ${role} model is available in the ${catalog} catalog`);
 }
 
-function defaultClassifierModel(ctx: ExtensionCommandContext): ClassifierModel {
-	return defaultModel(ctx, "gpt-5.3-codex-spark", "classifier");
+function defaultClassifierModel(
+	ctx: ExtensionCommandContext,
+	catalog: ModelCatalog,
+): ClassifierModel {
+	return defaultModel(ctx, catalog, "gpt-5.3-codex-spark", "classifier");
 }
 
-function defaultAnalysisModel(ctx: ExtensionCommandContext): ClassifierModel {
-	return defaultModel(ctx, "gpt-5.6-luna", "analysis");
+function defaultAnalysisModel(
+	ctx: ExtensionCommandContext,
+	catalog: ModelCatalog,
+): ClassifierModel {
+	return defaultModel(ctx, catalog, "gpt-5.6-luna", "analysis");
 }
 
 function resolveModel(
 	ctx: ExtensionCommandContext,
+	catalog: ModelCatalog,
 	configured: string,
 	fallback: () => ClassifierModel,
 ): ClassifierModel {
 	return (
-		availableModels(ctx).find(
+		availableModels(ctx, catalog).find(
 			(model) => modelLabel(model) === configured || model.id === configured,
 		) ?? fallback()
 	);
@@ -120,14 +149,39 @@ async function showConfigurationPanel(
 	initial: InsightsSettings,
 ): Promise<InsightsSettings | undefined> {
 	const settings = { ...initial };
-	const modelItems: SelectItem[] = availableModels(ctx).map((model) => ({
-		value: modelLabel(model),
-		label: model.id,
-		description: model.provider,
-	}));
-
 	const result = await ctx.ui.custom<"run" | undefined>(
 		(tui, theme, _keybindings, done) => {
+			const modelSubmenu = (
+				currentValue: string,
+				close: (selectedValue?: string) => void,
+			) => {
+				const modelItems: SelectItem[] = availableModels(ctx, settings.modelCatalog).map(
+					(model) => ({
+						value: modelLabel(model),
+						label: model.id,
+						description: model.provider,
+					}),
+				);
+				const modelList = new SelectList(
+					modelItems,
+					Math.min(modelItems.length, 12),
+					{
+						selectedPrefix: (text) => theme.fg("accent", text),
+						selectedText: (text) => theme.fg("accent", text),
+						description: (text) => theme.fg("muted", text),
+						scrollInfo: (text) => theme.fg("dim", text),
+						noMatch: (text) => theme.fg("warning", text),
+					},
+				);
+				modelList.onSelect = (item) => close(item.value);
+				modelList.onCancel = () => close();
+				const configuredIndex = modelItems.findIndex(
+					(item) => item.value === currentValue,
+				);
+				if (configuredIndex >= 0) modelList.setSelectedIndex(configuredIndex);
+				return modelList;
+			};
+
 			const items: SettingItem[] = [
 				{
 					id: "historyWindow",
@@ -144,48 +198,25 @@ async function showConfigurationPanel(
 					values: SESSION_LIMITS.map(String),
 				},
 				{
+					id: "modelCatalog",
+					label: "Model catalog",
+					description: "Scoped follows Pi's scoped models; all shows every authenticated model",
+					currentValue: settings.modelCatalog,
+					values: [...MODEL_CATALOGS],
+				},
+				{
 					id: "classifierModel",
 					label: "Classifier model",
 					description: "Classifies every prompt; defaults to gpt-5.3-codex-spark",
 					currentValue: settings.classifierModel,
-					submenu: (currentValue, close) => {
-						const list = new SelectList(modelItems, Math.min(modelItems.length, 12), {
-							selectedPrefix: (text) => theme.fg("accent", text),
-							selectedText: (text) => theme.fg("accent", text),
-							description: (text) => theme.fg("muted", text),
-							scrollInfo: (text) => theme.fg("dim", text),
-							noMatch: (text) => theme.fg("warning", text),
-						});
-						list.onSelect = (item) => close(item.value);
-						list.onCancel = () => close();
-						const configuredIndex = modelItems.findIndex(
-							(item) => item.value === currentValue,
-						);
-						if (configuredIndex >= 0) list.setSelectedIndex(configuredIndex);
-						return list;
-					},
+					submenu: modelSubmenu,
 				},
 				{
 					id: "analysisModel",
-					label: "Analysis model",
-					description: "Groups validated steering paraphrases into themes; defaults to gpt-5.6-luna",
+					label: "Repository analysis model",
+					description: "Applies the repository-analysis skill; defaults to gpt-5.6-luna",
 					currentValue: settings.analysisModel,
-					submenu: (currentValue, close) => {
-						const list = new SelectList(modelItems, Math.min(modelItems.length, 12), {
-							selectedPrefix: (text) => theme.fg("accent", text),
-							selectedText: (text) => theme.fg("accent", text),
-							description: (text) => theme.fg("muted", text),
-							scrollInfo: (text) => theme.fg("dim", text),
-							noMatch: (text) => theme.fg("warning", text),
-						});
-						list.onSelect = (item) => close(item.value);
-						list.onCancel = () => close();
-						const configuredIndex = modelItems.findIndex(
-							(item) => item.value === currentValue,
-						);
-						if (configuredIndex >= 0) list.setSelectedIndex(configuredIndex);
-						return list;
-					},
+					submenu: modelSubmenu,
 				},
 				{
 					id: "run",
@@ -196,7 +227,8 @@ async function showConfigurationPanel(
 				},
 			];
 
-			const list = new SettingsList(
+			let list: SettingsList;
+			list = new SettingsList(
 				items,
 				items.length + 2,
 				getSettingsListTheme(),
@@ -209,6 +241,24 @@ async function showConfigurationPanel(
 						settings.historyWindow = value as InsightsSettings["historyWindow"];
 					} else if (id === "maxSessions") {
 						settings.maxSessions = Number(value);
+					} else if (id === "modelCatalog") {
+						settings.modelCatalog = value as ModelCatalog;
+						const classifier = resolveModel(
+							ctx,
+							settings.modelCatalog,
+							settings.classifierModel,
+							() => defaultClassifierModel(ctx, settings.modelCatalog),
+						);
+						const analysis = resolveModel(
+							ctx,
+							settings.modelCatalog,
+							settings.analysisModel,
+							() => defaultAnalysisModel(ctx, settings.modelCatalog),
+						);
+						settings.classifierModel = modelLabel(classifier);
+						settings.analysisModel = modelLabel(analysis);
+						list.updateValue("classifierModel", settings.classifierModel);
+						list.updateValue("analysisModel", settings.analysisModel);
 					} else if (id === "classifierModel") {
 						settings.classifierModel = value;
 					} else if (id === "analysisModel") {
@@ -224,7 +274,7 @@ async function showConfigurationPanel(
 			);
 			container.addChild(
 				new Text(
-					theme.fg("muted", "Prompt classification: Spark · Theme analysis: Luna"),
+					theme.fg("muted", "Portable classifier and repository-analysis skills"),
 					1,
 					0,
 				),
@@ -274,19 +324,18 @@ export default function repoInsightsExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			try {
-				const defaultClassifier = defaultClassifierModel(ctx);
-				const defaultAnalysis = defaultAnalysisModel(ctx);
-				const loaded = loadInsightsSettings(
-					modelLabel(defaultClassifier),
-					modelLabel(defaultAnalysis),
-				);
+				const loaded = loadInsightsSettings();
+				const defaultClassifier = defaultClassifierModel(ctx, loaded.modelCatalog);
+				const defaultAnalysis = defaultAnalysisModel(ctx, loaded.modelCatalog);
 				const configuredClassifier = resolveModel(
 					ctx,
+					loaded.modelCatalog,
 					loaded.classifierModel,
 					() => defaultClassifier,
 				);
 				const configuredAnalysis = resolveModel(
 					ctx,
+					loaded.modelCatalog,
 					loaded.analysisModel,
 					() => defaultAnalysis,
 				);
@@ -302,13 +351,15 @@ export default function repoInsightsExtension(pi: ExtensionAPI): void {
 				if (!settings) return;
 				const classifierModel = resolveModel(
 					ctx,
+					settings.modelCatalog,
 					settings.classifierModel,
-					() => defaultClassifier,
+					() => defaultClassifierModel(ctx, settings.modelCatalog),
 				);
 				const analysisModel = resolveModel(
 					ctx,
+					settings.modelCatalog,
 					settings.analysisModel,
-					() => defaultAnalysis,
+					() => defaultAnalysisModel(ctx, settings.modelCatalog),
 				);
 				const outputDirectory = join(getAgentDir(), "repo-insights");
 
@@ -317,7 +368,10 @@ export default function repoInsightsExtension(pi: ExtensionAPI): void {
 					"repo-insights",
 					progressLines({ phase: "sessions", completed: 0, total: 1 }),
 				);
-				const classifierSkill = await loadClassifierSkill();
+				const [classifierSkill, repositoryAnalysisSkill] = await Promise.all([
+					loadPackagedSkill(CLASSIFIER_SKILL_URL, "classifier"),
+					loadPackagedSkill(ANALYZER_SKILL_URL, "repository analyzer"),
+				]);
 				const sessionInfos = await SessionManager.listAll((loadedCount, total) => {
 					ctx.ui.setWidget(
 						"repo-insights",
@@ -337,9 +391,11 @@ export default function repoInsightsExtension(pi: ExtensionAPI): void {
 					async (prompt) => callModel(ctx, classifierModel, prompt),
 					async (prompt) => callModel(ctx, analysisModel, prompt),
 					classifierSkill,
+					repositoryAnalysisSkill,
 					{
 						sinceDays: historyWindowDays(settings.historyWindow),
 						maxSessions: settings.maxSessions,
+						modelCatalog: settings.modelCatalog,
 						classifierModel: modelLabel(classifierModel),
 						analysisModel: modelLabel(analysisModel),
 						currentSessionId: ctx.sessionManager.getSessionId(),

@@ -2,7 +2,11 @@
   "name": "pi-repo-insights",
   "version": "0.2.0",
   "type": "module",
-  "description": "Classify user requests and corrective steering in Pi session history",
+  "exports": {
+    "./skills/repo-insights-classifier": "./skills/repo-insights-classifier/SKILL.md",
+    "./skills/repo-insights-analyzer": "./skills/repo-insights-analyzer/SKILL.md"
+  },
+  "description": "Classify user steering and derive repository insights from Pi session history",
   "license": "MPL-2.0",
   "homepage": "https://github.com/liyishuai/pi-repo-insights",
   "repository": {
@@ -15,6 +19,7 @@
     "prompt-analysis",
     "session-analysis",
     "agent-feedback",
+    "agent-skills",
     "developer-productivity"
   ],
   "files": [

@@ -34,12 +34,13 @@ Run one command with no arguments:
 /repo-insights
 ```
 
-The command opens an interactive configuration panel with four fields:
+The command opens an interactive configuration panel with five fields:
 
 - **History window** — all history or the last 7, 30, 90, 180, or 365 days;
 - **Session limit** — 25, 50, 100, 200, 500, or 1,000 recent sessions;
+- **Model catalog** — `scoped` follows Pi's scoped models (or all models when no scope is configured), while `all` always shows every authenticated model;
 - **Classifier model** — classifies each prompt, defaulting to `openai-codex/gpt-5.3-codex-spark`; and
-- **Analysis model** — groups steering into themes, defaulting to `openai-codex/gpt-5.6-luna`.
+- **Repository analysis model** — groups steering into themes, defaulting to `openai-codex/gpt-5.6-luna`.
 
 Select **Run analysis** in the panel to start. Selections are remembered globally in `~/.pi/agent/repo-insights/config.json` (or the equivalent path under `PI_CODING_AGENT_DIR`). If a preferred model is unavailable, the extension falls back to Pi's active model.
 
@@ -64,9 +65,14 @@ Every included chronological user prompt receives one primary class:
 
 If a prompt both redirects the agent and gives a new order, steering takes priority. Steering is further classified as course correction, scope reassertion, frustration, missed requirement, unwanted action, premature completion, or evidence challenge.
 
-The classification contract lives in the packaged `repo-insights-classifier` skill at `skills/repo-insights-classifier/SKILL.md`. The extension loads that skill for classification and theme grouping. Pi also discovers it as `/skill:repo-insights-classifier`, so compatible agents can load the same contract.
+Two packaged Agent Skills define the semantic work:
 
-Classification runs as bounded, stateless model tasks on Spark by default. Validated steering paraphrases are passed to the separate Luna analysis task to group themes and propose repository actions. Prompt batches are limited to 160 prompts and 40,000 prompt characters. A run submits at most 500 prompts and 120,000 prompt characters; the report marks truncated coverage.
+- `skills/repo-insights-classifier/SKILL.md` classifies requests, steering, responses, and other prompts.
+- `skills/repo-insights-analyzer/SKILL.md` groups repository-attributed steering and proposes grounded repository actions.
+
+Pi discovers them as `/skill:repo-insights-classifier` and `/skill:repo-insights-analyzer`. Their frontmatter, input contracts, decision rules, and JSON outputs are self-contained, so another Agent Skills-compatible framework can copy or reference either skill directory directly. `extensions/repo-insights.ts` is the Pi adapter for session loading, the configuration panel, model selection, and report writing.
+
+Classification runs as bounded, stateless model tasks on Spark by default. Validated steering paraphrases are passed to the separate Luna repository-analysis task. Prompt batches are limited to 160 prompts and 40,000 prompt characters. A run submits at most 500 prompts and 120,000 prompt characters; the report marks truncated coverage.
 
 ## Repository attribution
 
@@ -85,7 +91,7 @@ Repository facts are used only after prompt classification, for attribution:
 - Host validation replaces a paraphrase if it copies eight consecutive words from its source prompt.
 - Repository attribution resolves local Git roots and origin remotes without a GitHub API call.
 - Reports include local paths and repository identities for attribution.
-- The packaged skill is the shared classifier contract for the extension and compatible agents.
+- The two packaged Agent Skills provide the portable classification and repository-analysis contracts.
 
 The current report schema is `schemaVersion: 2`.
 

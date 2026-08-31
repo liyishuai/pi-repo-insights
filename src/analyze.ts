@@ -2,10 +2,10 @@
 
 import {
 	buildClassificationPlan,
-	buildThemePrompt,
+	buildRepositoryAnalysisPrompt,
 	parseClassificationBatch,
-	parseThemes,
-} from "./model-analysis.ts";
+	parseRepositoryAnalysis,
+} from "./skill-runtime.ts";
 import { resolveRepositoryAttribution } from "./repository-attribution.ts";
 import { analyzeSessionEntries } from "./session-analysis.ts";
 import type {
@@ -38,7 +38,7 @@ export type AnalyzeOptions = ReportOptions & {
 };
 
 export type SessionLoader = (source: SessionSource) => Promise<unknown[]>;
-export type PromptClassifier = (prompt: string) => Promise<string>;
+export type SkillModelCall = (prompt: string) => Promise<string>;
 
 function selectedSources(
 	sources: SessionSource[],
@@ -98,7 +98,7 @@ async function loadSessions(
 
 async function classifyPrompts(
 	plan: ReturnType<typeof buildClassificationPlan>,
-	classify: PromptClassifier,
+	classify: SkillModelCall,
 	onProgress: AnalyzeOptions["onProgress"],
 ): Promise<PromptClassification[]> {
 	if (plan.batches.length === 0) return [];
@@ -131,9 +131,10 @@ async function classifyPrompts(
 export async function analyzeRepositoryHistory(
 	sources: SessionSource[],
 	loadEntries: SessionLoader,
-	classify: PromptClassifier,
-	analyzeThemes: PromptClassifier,
+	classify: SkillModelCall,
+	analyzeRepositoryInsights: SkillModelCall,
 	classifierSkill: string,
+	repositoryAnalysisSkill: string,
 	options: AnalyzeOptions,
 ): Promise<RepoInsightsReport> {
 	const selected = selectedSources(sources, options);
@@ -158,29 +159,32 @@ export async function analyzeRepositoryHistory(
 		classify,
 		options.onProgress,
 	);
-	const themeRequest = buildThemePrompt(classifications, classifierSkill);
+	const themeRequest = buildRepositoryAnalysisPrompt(
+		classifications,
+		repositoryAnalysisSkill,
+	);
 	let themes: SteeringTheme[] = [];
 	if (themeRequest) {
 		options.onProgress?.({ phase: "themes", completed: 0, total: 1 });
-		themes = parseThemes(
-			await analyzeThemes(themeRequest.prompt),
+		themes = parseRepositoryAnalysis(
+			await analyzeRepositoryInsights(themeRequest.prompt),
 			themeRequest.refs,
 		);
 		options.onProgress?.({ phase: "themes", completed: 1, total: 1 });
 	}
 	options.onProgress?.({ phase: "report", completed: 1, total: 1 });
+	const reportOptions: ReportOptions = {
+		sinceDays: options.sinceDays,
+		maxSessions: options.maxSessions,
+	};
+	if (options.modelCatalog) reportOptions.modelCatalog = options.modelCatalog;
+	if (options.classifierModel) reportOptions.classifierModel = options.classifierModel;
+	if (options.analysisModel) reportOptions.analysisModel = options.analysisModel;
 
 	return {
 		schemaVersion: 2,
 		generatedAt: (options.now ?? new Date()).toISOString(),
-		options: {
-			sinceDays: options.sinceDays,
-			maxSessions: options.maxSessions,
-			...(options.classifierModel
-				? { classifierModel: options.classifierModel }
-				: {}),
-			...(options.analysisModel ? { analysisModel: options.analysisModel } : {}),
-		},
+		options: reportOptions,
 		classifierModel: options.classifierModel ?? "active model",
 		analysisModel: options.analysisModel ?? "active model",
 		sessions: {
@@ -197,6 +201,7 @@ export async function analyzeRepositoryHistory(
 		themes,
 		methodology: [
 			"The packaged repo-insights-classifier skill defines the request-versus-steering rubric.",
+			"The packaged repo-insights-analyzer skill defines repository theme grouping and action synthesis.",
 			"Chronological user prompts are classified as requests, steering, responses, or other content.",
 			"A prompt that redirects current work and issues a new order is classified as steering; an initial desired outcome is classified as a request.",
 			"The classifier model receives selected user prompts, and the analysis model receives validated steering paraphrases for theme grouping.",

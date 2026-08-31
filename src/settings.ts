@@ -6,12 +6,17 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export const HISTORY_WINDOWS = ["all", "7d", "30d", "90d", "180d", "365d"] as const;
 export const SESSION_LIMITS = [25, 50, 100, 200, 500, 1_000] as const;
+export const MODEL_CATALOGS = ["scoped", "all"] as const;
+export const DEFAULT_CLASSIFIER_MODEL = "openai-codex/gpt-5.3-codex-spark";
+export const DEFAULT_ANALYSIS_MODEL = "openai-codex/gpt-5.6-luna";
 
 export type HistoryWindow = (typeof HISTORY_WINDOWS)[number];
+export type ModelCatalog = (typeof MODEL_CATALOGS)[number];
 
 export type InsightsSettings = {
 	historyWindow: HistoryWindow;
 	maxSessions: number;
+	modelCatalog: ModelCatalog;
 	classifierModel: string;
 	analysisModel: string;
 };
@@ -22,24 +27,18 @@ function configPath(): string {
 	return join(getAgentDir(), "repo-insights", "config.json");
 }
 
-function defaults(
-	defaultClassifierModel: string,
-	defaultAnalysisModel: string,
-): InsightsSettings {
+function defaults(): InsightsSettings {
 	return {
 		historyWindow: "all",
 		maxSessions: 200,
-		classifierModel: defaultClassifierModel,
-		analysisModel: defaultAnalysisModel,
+		modelCatalog: "scoped",
+		classifierModel: DEFAULT_CLASSIFIER_MODEL,
+		analysisModel: DEFAULT_ANALYSIS_MODEL,
 	};
 }
 
-function sanitize(
-	value: StoredSettings | null,
-	defaultClassifierModel: string,
-	defaultAnalysisModel: string,
-): InsightsSettings {
-	const fallback = defaults(defaultClassifierModel, defaultAnalysisModel);
+function sanitize(value: StoredSettings | null): InsightsSettings {
+	const fallback = defaults();
 	const storedWindow = String(value?.historyWindow ?? "");
 	const historyWindow = (HISTORY_WINDOWS as readonly string[]).includes(storedWindow)
 		? (storedWindow as HistoryWindow)
@@ -48,6 +47,10 @@ function sanitize(
 	const maxSessions = (SESSION_LIMITS as readonly number[]).includes(storedLimit)
 		? storedLimit
 		: fallback.maxSessions;
+	const storedCatalog = String(value?.modelCatalog ?? "");
+	const modelCatalog = (MODEL_CATALOGS as readonly string[]).includes(storedCatalog)
+		? (storedCatalog as ModelCatalog)
+		: fallback.modelCatalog;
 	const storedClassifier = String(value?.classifierModel ?? "").trim();
 	const classifierModel =
 		storedClassifier && storedClassifier.length <= 200
@@ -58,20 +61,23 @@ function sanitize(
 		storedAnalysis && storedAnalysis.length <= 200
 			? storedAnalysis
 			: fallback.analysisModel;
-	return { historyWindow, maxSessions, classifierModel, analysisModel };
+	return {
+		historyWindow,
+		maxSessions,
+		modelCatalog,
+		classifierModel,
+		analysisModel,
+	};
 }
 
-export function loadInsightsSettings(
-	defaultClassifierModel: string,
-	defaultAnalysisModel: string,
-): InsightsSettings {
+export function loadInsightsSettings(): InsightsSettings {
 	const path = configPath();
-	if (!existsSync(path)) return defaults(defaultClassifierModel, defaultAnalysisModel);
+	if (!existsSync(path)) return defaults();
 	try {
 		const stored = JSON.parse(readFileSync(path, "utf8")) as StoredSettings;
-		return sanitize(stored, defaultClassifierModel, defaultAnalysisModel);
+		return sanitize(stored);
 	} catch {
-		return defaults(defaultClassifierModel, defaultAnalysisModel);
+		return defaults();
 	}
 }
 

@@ -74,6 +74,7 @@ export type SteeringTheme = {
 export type ReportOptions = {
 	sinceDays: number;
 	maxSessions: number;
+	modelCatalog?: "scoped" | "all";
 	classifierModel?: string;
 	analysisModel?: string;
 };

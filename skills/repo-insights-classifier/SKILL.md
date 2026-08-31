@@ -1,8 +1,8 @@
 ---
 name: repo-insights-classifier
-description: Classifies chronological coding-agent user prompts as new requests, corrective steering, responses, or other content; identifies frustration and groups repeated steering into repository-attributed themes. Use when analyzing where a user believed an agent's current work or approach was wrong.
+description: Classifies chronological coding-agent user prompts as new requests, corrective steering, responses, or other content, including frustration and missed requirements. Use when identifying where a user believed an agent's current work or approach was wrong.
 license: MPL-2.0
-compatibility: Requires a model capable of structured JSON output. No tools or subagent implementation are required.
+compatibility: Agent Skills-compatible framework and a model capable of structured JSON output.
 ---
 
 # Repository Insights Prompt Classifier
@@ -62,30 +62,8 @@ Return JSON only:
 
 `confidence` is `high` or `medium`. For non-steering prompts, `steering_category` and `expected_behavior` must be `null`.
 
-## Theme mode
-
-Theme input contains host-validated paraphrases of steering classifications, not raw prompts. Group only repeated or tightly related corrections. Do not turn unrelated steering into a generic theme.
-
-Repository labels remain attribution only. Set `repository_action` to a repository-owned script, check, CI contract, schema, or documented interface when the steering evidence directly supports it; use `null` otherwise.
-
-Return JSON only:
-
-```json
-{
-  "themes": [
-    {
-      "title": "Short theme title",
-      "classification_refs": ["C001"],
-      "summary": "Paraphrased recurring correction",
-      "repository_action": null
-    }
-  ]
-}
-```
-
 ## Evidence discipline
 
 - Base each prompt kind on the prompt's function within its chronological user-prompt sequence.
 - Treat length, repetition, negativity, and emphasis as context rather than standalone proof of steering.
 - Report what the user signaled about the agent's behavior rather than judging whether the user was objectively correct.
-- Use `null` for a repository action when the steering evidence does not support one.
