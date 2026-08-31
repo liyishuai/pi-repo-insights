@@ -28,12 +28,12 @@ function label(value: string): string {
 		.join(" ");
 }
 
-function repositories(classification: PromptClassification): string {
-	return classification.repositories.length
-		? classification.repositories
-				.map((repository) => `\`${repository}\``)
-				.join(", ")
-		: "Unresolved";
+function markdownFence(value: string): string {
+	const longestRun = Math.max(
+		0,
+		...(value.match(/`+/g) ?? []).map((match) => match.length),
+	);
+	return "`".repeat(Math.max(4, longestRun + 1));
 }
 
 function kindCounts(
@@ -69,14 +69,14 @@ export function renderMarkdown(report: RepoInsightsReport): string {
 	}
 	lines.push(
 		"",
-		"> Classification uses only chronological user prompts. Repository and tool-path facts are attribution only, not behavioral evidence.",
-		"> Prompt wording is never written to this report; all descriptions below are model-generated paraphrases.",
+		"> Classification uses only chronological user prompts. Bounded repository inventories ground issue drafts but do not classify user behavior.",
+		"> Prompt wording and detailed steering entries are not written to this report. Issue descriptions are model-generated synthesis.",
 		"",
 	);
 
 	lines.push("## Classification summary", "");
 	lines.push("| Kind | Prompts | Meaning |", "|---|---:|---|");
-	const meanings: Record<PromptKind, string> = {
+	const meanings = {
 		request: "A new or additive desired outcome, order, preference, or question",
 		steering:
 			"A correction, rejection, redirection, or constraint prompted by current agent behavior",
@@ -85,83 +85,36 @@ export function renderMarkdown(report: RepoInsightsReport): string {
 		other:
 			"Acknowledgement, status-only content, or content outside the primary classes",
 		unclear: "The classifier did not return a usable class",
-	};
+	} satisfies Record<PromptKind, string>;
 	for (const kind of KIND_ORDER) {
 		lines.push(`| ${label(kind)} | ${counts[kind]} | ${meanings[kind]} |`);
 	}
 	lines.push("");
 
-	lines.push("### By session", "");
-	lines.push(
-		"| Session | Requests | Steering | Responses | Other | Unclear |",
-		"|---|---:|---:|---:|---:|---:|",
-	);
-	const sessionIds = [
-		...new Set(
-			report.classifications.map((classification) => classification.sessionId),
-		),
-	];
-	for (const sessionId of sessionIds) {
-		const sessionCounts = kindCounts(
-			report.classifications.filter(
-				(classification) => classification.sessionId === sessionId,
-			),
-		);
+	lines.push("## Draft GitHub issues", "");
+	for (const issue of report.issues) {
+		const fence = markdownFence(issue.body);
 		lines.push(
-			`| \`${sessionId.slice(0, 8)}\` | ${sessionCounts.request} | ${sessionCounts.steering} | ${sessionCounts.response} | ${sessionCounts.other} | ${sessionCounts.unclear} |`,
-		);
-	}
-	if (sessionIds.length === 0)
-		lines.push("| _No prompts_ | 0 | 0 | 0 | 0 | 0 |");
-	lines.push("");
-
-	lines.push("## Repository attribution", "");
-	lines.push(
-		"| Repository | Sessions | Local checkouts | Canonical root |",
-		"|---|---:|---:|---|",
-	);
-	for (const repository of report.repositories) {
-		lines.push(
-			`| \`${inline(repository.key)}\` | ${repository.sessionIds.length} | ${repository.checkoutCount} | ${repository.root ? `\`${inline(repository.root)}\`` : "Remote reference only"} |`,
-		);
-	}
-	if (report.repositories.length === 0) {
-		lines.push("| _No repository attribution resolved_ | 0 | 0 | — |");
-	}
-	lines.push("");
-
-	lines.push("## Steering detected", "");
-	const steering = report.classifications.filter(
-		(classification) => classification.kind === "steering",
-	);
-	for (const classification of steering) {
-		lines.push(
-			`### ${label(classification.steeringCategory ?? "course_correction")} — session \`${classification.sessionId.slice(0, 8)}\`, prompt ${classification.promptIndex}`,
+			`### \`${inline(issue.repository)}\``,
 			"",
-			`- **Repositories:** ${repositories(classification)}`,
-			`- **Confidence:** ${classification.confidence}`,
-			`- **What the user signaled:** ${inline(classification.paraphrase)}`,
-			`- **Expected adjustment:** ${inline(classification.expectedBehavior ?? "Follow the user's correction.")}`,
+			"#### Issue title",
+			"",
+			inline(issue.title),
+			"",
+			"#### Issue body",
+			"",
+			`${fence}markdown`,
+			issue.body,
+			fence,
 			"",
 		);
 	}
-	if (steering.length === 0)
-		lines.push("No steering prompts were classified.", "");
-
-	lines.push("## Repeated steering themes", "");
-	for (const theme of report.themes) {
+	if (report.issues.length === 0) {
 		lines.push(
-			`### ${inline(theme.title)}`,
-			"",
-			`- **Prompt-derived pattern:** ${inline(theme.summary)}`,
-			`- **Steering prompts:** ${theme.promptIds.length}`,
-			`- **Repositories:** ${theme.repositories.length ? theme.repositories.map((repository) => `\`${inline(repository)}\``).join(", ") : "Unresolved"}`,
-			`- **Repository-level action:** ${theme.repositoryAction ? inline(theme.repositoryAction) : "None inferred. Treat this as agent-behavior feedback rather than inventing a repository change."}`,
+			"No repository issue draft was produced from the available steering and inventory evidence.",
 			"",
 		);
 	}
-	if (report.themes.length === 0)
-		lines.push("No repeated steering themes were produced.", "");
 
 	lines.push("## Methodology and privacy", "");
 	for (const item of report.methodology) lines.push(`- ${item}`);

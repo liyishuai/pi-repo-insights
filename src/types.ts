@@ -62,13 +62,28 @@ export type PromptClassification = {
 	expectedBehavior?: string;
 };
 
-export type SteeringTheme = {
+export type RepositoryInventory = {
+	repository: string;
+	topLevelDirectories: string[];
+	topLevelFiles: string[];
+	manifests: string[];
+	ciFiles: string[];
+	validationEntrypoints: string[];
+	packageScripts: string[];
+	filesVisited: number;
+	truncated: boolean;
+};
+
+export type RepositoryIssueDraft = {
 	id: string;
+	repository: string;
 	title: string;
-	summary: string;
+	currentStatus: string;
+	agentImpact: string;
+	proposal: string[];
+	acceptanceCriteria: string[];
+	body: string;
 	promptIds: string[];
-	repositories: string[];
-	repositoryAction?: string;
 };
 
 export type ReportOptions = {
@@ -80,7 +95,7 @@ export type ReportOptions = {
 };
 
 export type RepoInsightsReport = {
-	schemaVersion: 2;
+	schemaVersion: 3;
 	generatedAt: string;
 	options: ReportOptions;
 	classifierModel: string;
@@ -95,7 +110,8 @@ export type RepoInsightsReport = {
 		promptInputTruncated: boolean;
 	};
 	repositories: RepositoryAttribution[];
+	inventories: RepositoryInventory[];
 	classifications: PromptClassification[];
-	themes: SteeringTheme[];
+	issues: RepositoryIssueDraft[];
 	methodology: string[];
 };

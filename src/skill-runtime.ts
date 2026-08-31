@@ -3,9 +3,11 @@
 import type {
 	PromptClassification,
 	PromptKind,
+	RepositoryAttribution,
+	RepositoryInventory,
+	RepositoryIssueDraft,
 	SessionEvidence,
 	SteeringCategory,
-	SteeringTheme,
 } from "./types.ts";
 
 const MAX_PROMPTS = 500;
@@ -15,6 +17,7 @@ const MAX_SESSION_CHARACTERS = 30_000;
 const MAX_PROMPT_CHARACTERS = 4_000;
 const MAX_BATCH_PROMPTS = 160;
 const MAX_BATCH_CHARACTERS = 40_000;
+const MAX_ANALYSIS_INVENTORY_CHARACTERS = 80_000;
 const EXACT_EXCERPT_WORDS = 8;
 
 const PROMPT_KINDS = new Set<PromptKind>([
@@ -64,16 +67,19 @@ type RawClassification = {
 	expected_behavior?: string | null;
 };
 
-type RawTheme = {
+type RawIssue = {
+	repository?: string | null;
 	title?: string | null;
 	classification_refs?: string[];
-	summary?: string | null;
-	repository_action?: string | null;
+	current_status?: string | null;
+	agent_impact?: string | null;
+	proposal?: string[];
+	acceptance_criteria?: string[];
 };
 
 type RawModelResponse = {
 	classifications?: RawClassification[];
-	themes?: RawTheme[];
+	issues?: RawIssue[];
 };
 
 function boundedText(
@@ -375,22 +381,99 @@ export function parseClassificationBatch(
 	});
 }
 
+export type RepositoryAnalysisRequest = {
+	prompt: string;
+	refs: Map<string, PromptClassification>;
+	repositoryKeys: Set<string>;
+};
+
 export function buildRepositoryAnalysisPrompt(
 	classifications: PromptClassification[],
+	repositories: RepositoryAttribution[],
+	inventories: RepositoryInventory[],
 	analysisSkill: string,
-): { prompt: string; refs: Map<string, PromptClassification> } | undefined {
+): RepositoryAnalysisRequest | undefined {
 	const steering = classifications.filter(
-		(classification) => classification.kind === "steering",
+		(classification) =>
+			classification.kind === "steering" && classification.repositories.length > 0,
 	);
 	if (steering.length === 0) return undefined;
 	const refs = new Map<string, PromptClassification>();
-	const lines = steering.map((classification, index) => {
+	const classificationLines = steering.map((classification, index) => {
 		const ref = `C${String(index + 1).padStart(3, "0")}`;
 		refs.set(ref, classification);
-		return `${ref} | category=${classification.steeringCategory} | repositories=${classification.repositories.join(", ") || "unresolved"} | paraphrase=${JSON.stringify(classification.paraphrase)} | expected=${JSON.stringify(classification.expectedBehavior ?? "")}`;
+		return `${ref} | category=${classification.steeringCategory} | repositories=${classification.repositories.join(", ")} | paraphrase=${JSON.stringify(classification.paraphrase)} | expected=${JSON.stringify(classification.expectedBehavior ?? "")}`;
+	});
+	const inventoryByRepository = new Map(
+		inventories.map((inventory) => [inventory.repository, inventory]),
+	);
+	const steeringRepositoryKeys = new Set(
+		steering.flatMap((classification) => classification.repositories),
+	);
+	const relevantRepositories = repositories.filter((repository) =>
+		steeringRepositoryKeys.has(repository.key),
+	);
+	if (relevantRepositories.length === 0) return undefined;
+	let inventoryCharacters = 0;
+	const repositoryLines = relevantRepositories.map((repository) => {
+		const inventory = inventoryByRepository.get(repository.key);
+		const repositoryContext = (mode: "full" | "compact" | "summary") => {
+			const base = {
+				repository: repository.key,
+				checkout_count: repository.checkoutCount,
+				attributed_session_count: repository.sessionIds.length,
+			};
+			if (!inventory) return { ...base, inventory: null };
+			if (mode === "summary") {
+				return {
+					...base,
+					inventory: {
+						files_visited: inventory.filesVisited,
+						scan_truncated: true,
+						context_omitted: true,
+					},
+				};
+			}
+			const limited = (values: string[], maxItems: number) =>
+				mode === "compact" ? values.slice(0, maxItems) : values;
+			return {
+				...base,
+				inventory: {
+					top_level_directories: limited(inventory.topLevelDirectories, 20),
+					top_level_files: limited(inventory.topLevelFiles, 20),
+					manifests: limited(inventory.manifests, 25),
+					ci_files: limited(inventory.ciFiles, 25),
+					validation_entrypoints: limited(
+						inventory.validationEntrypoints,
+						30,
+					),
+					package_scripts: limited(inventory.packageScripts, 30),
+					files_visited: inventory.filesVisited,
+					scan_truncated: inventory.truncated || mode === "compact",
+				},
+			};
+		};
+		let line = JSON.stringify(repositoryContext("full"));
+		if (
+			inventoryCharacters + line.length >
+			MAX_ANALYSIS_INVENTORY_CHARACTERS
+		) {
+			line = JSON.stringify(repositoryContext("compact"));
+		}
+		if (
+			inventoryCharacters + line.length >
+			MAX_ANALYSIS_INVENTORY_CHARACTERS
+		) {
+			line = JSON.stringify(repositoryContext("summary"));
+		}
+		inventoryCharacters += line.length;
+		return line;
 	});
 	return {
 		refs,
+		repositoryKeys: new Set(
+			relevantRepositories.map((repository) => repository.key),
+		),
 		prompt: `Apply the packaged repository-analysis skill below. Return only the JSON required by the skill.
 
 BEGIN PACKAGED SKILL
@@ -398,46 +481,148 @@ ${analysisSkill}
 END PACKAGED SKILL
 
 BEGIN STEERING CLASSIFICATIONS
-${lines.join("\n")}
-END STEERING CLASSIFICATIONS`,
+${classificationLines.join("\n")}
+END STEERING CLASSIFICATIONS
+
+BEGIN REPOSITORY INVENTORIES
+${repositoryLines.join("\n")}
+END REPOSITORY INVENTORIES`,
+	};
+}
+
+function issueBody(
+	currentStatus: string,
+	agentImpact: string,
+	proposal: string[],
+	acceptanceCriteria: string[],
+): string {
+	return [
+		"## Current status",
+		"",
+		currentStatus,
+		"",
+		"## Impact on agent effectiveness",
+		"",
+		agentImpact,
+		"",
+		"## Proposed change",
+		"",
+		...proposal.map((item) => `- ${item}`),
+		"",
+		"## Acceptance criteria",
+		"",
+		...acceptanceCriteria.map((item) => `- [ ] ${item}`),
+	].join("\n");
+}
+
+function boundedList(value: string[] | undefined, maxItems: number): string[] {
+	return (Array.isArray(value) ? value : [])
+		.map((item) => boundedText(String(item), "", 500))
+		.filter(Boolean)
+		.slice(0, maxItems);
+}
+
+function groupRawIssues(
+	rawIssues: RawIssue[],
+	repositoryKeys: Set<string>,
+): Map<string, RawIssue[]> {
+	const grouped = new Map<string, RawIssue[]>();
+	for (const raw of rawIssues.slice(0, 100)) {
+		const repository = boundedText(raw?.repository, "", 300);
+		if (!repository || !repositoryKeys.has(repository)) continue;
+		const group = grouped.get(repository) ?? [];
+		group.push(raw);
+		grouped.set(repository, group);
+	}
+	return grouped;
+}
+
+function referencedClassifications(
+	repository: string,
+	drafts: RawIssue[],
+	refs: Map<string, PromptClassification>,
+): PromptClassification[] {
+	const byId = new Map<string, PromptClassification>();
+	for (const draft of drafts) {
+		const draftRefs = Array.isArray(draft.classification_refs)
+			? draft.classification_refs
+			: [];
+		for (const ref of draftRefs) {
+			const classification = refs.get(String(ref));
+			if (classification?.repositories.includes(repository)) {
+				byId.set(classification.id, classification);
+			}
+		}
+	}
+	return [...byId.values()];
+}
+
+function mergedIssueText(
+	drafts: RawIssue[],
+	field: "current_status" | "agent_impact",
+	maxLength: number,
+): string {
+	return drafts
+		.flatMap((draft) => {
+			const value = boundedText(draft[field], "", maxLength);
+			return value ? [value] : [];
+		})
+		.join("\n\n");
+}
+
+function issueFromDrafts(
+	repository: string,
+	drafts: RawIssue[],
+	refs: Map<string, PromptClassification>,
+	index: number,
+): RepositoryIssueDraft | undefined {
+	const first = drafts[0];
+	if (!first) return undefined;
+	const title = boundedText(first.title, "", 160);
+	const currentStatus = mergedIssueText(drafts, "current_status", 1_200);
+	const agentImpact = mergedIssueText(drafts, "agent_impact", 900);
+	const proposal = [
+		...new Set(drafts.flatMap((draft) => boundedList(draft.proposal, 12))),
+	].slice(0, 12);
+	const acceptanceCriteria = [
+		...new Set(
+			drafts.flatMap((draft) => boundedList(draft.acceptance_criteria, 15)),
+		),
+	].slice(0, 15);
+	const classifications = referencedClassifications(repository, drafts, refs);
+	if (
+		!title ||
+		!currentStatus ||
+		!agentImpact ||
+		proposal.length === 0 ||
+		acceptanceCriteria.length === 0 ||
+		classifications.length === 0
+	) {
+		return undefined;
+	}
+	return {
+		id: `issue-${index}`,
+		repository,
+		title,
+		currentStatus,
+		agentImpact,
+		proposal,
+		acceptanceCriteria,
+		body: issueBody(currentStatus, agentImpact, proposal, acceptanceCriteria),
+		promptIds: classifications.map((classification) => classification.id),
 	};
 }
 
 export function parseRepositoryAnalysis(
 	text: string,
-	refs: Map<string, PromptClassification>,
-): SteeringTheme[] {
+	request: RepositoryAnalysisRequest,
+): RepositoryIssueDraft[] {
 	const parsed = parseJsonObject(text);
-	const rawThemes = Array.isArray(parsed.themes) ? parsed.themes : [];
-	const themes: SteeringTheme[] = [];
-	for (const raw of rawThemes.slice(0, 12)) {
-		if (!raw || !Array.isArray(raw.classification_refs)) continue;
-		const classifications = raw.classification_refs.flatMap((ref) => {
-			const classification = refs.get(String(ref));
-			return classification ? [classification] : [];
-		});
-		if (classifications.length === 0) continue;
-		const title = boundedText(raw.title, "Steering pattern", 120);
-		const summary = boundedText(
-			raw.summary,
-			"The user repeatedly redirected the agent on a related concern.",
-			700,
-		);
-		const repositoryAction = boundedText(raw.repository_action, "", 700);
-		const repositories = [
-			...new Set(
-				classifications.flatMap((classification) => classification.repositories),
-			),
-		].sort((a, b) => a.localeCompare(b));
-		const theme: SteeringTheme = {
-			id: `theme-${themes.length + 1}`,
-			title,
-			summary,
-			promptIds: classifications.map((classification) => classification.id),
-			repositories,
-		};
-		if (repositoryAction) theme.repositoryAction = repositoryAction;
-		themes.push(theme);
-	}
-	return themes;
+	const rawIssues = Array.isArray(parsed.issues) ? parsed.issues : [];
+	const grouped = groupRawIssues(rawIssues, request.repositoryKeys);
+	const issues = [...grouped].flatMap(([repository, drafts], index) => {
+		const issue = issueFromDrafts(repository, drafts, request.refs, index + 1);
+		return issue ? [issue] : [];
+	});
+	return issues.sort((a, b) => a.repository.localeCompare(b.repository));
 }

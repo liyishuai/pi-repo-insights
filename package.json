@@ -1,6 +1,6 @@
 {
   "name": "pi-repo-insights",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "exports": {
     "./skills/repo-insights-classifier": "./skills/repo-insights-classifier/SKILL.md",

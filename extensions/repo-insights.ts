@@ -20,7 +20,10 @@ import {
 } from "@earendil-works/pi-tui";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { analyzeRepositoryHistory, type AnalysisProgress } from "../src/analyze.ts";
+import {
+	analyzeRepositoryHistory,
+	type AnalysisProgress,
+} from "../src/analyze.ts";
 import { renderMarkdown } from "../src/report.ts";
 import {
 	HISTORY_WINDOWS,
@@ -53,9 +56,11 @@ async function loadPackagedSkill(url: URL, name: string): Promise<string> {
 function progressLines(progress: AnalysisProgress): string[] {
 	let label = "Building report";
 	if (progress.phase === "sessions") label = "Reading user prompts";
-	if (progress.phase === "repositories") label = "Resolving repository attribution";
-	if (progress.phase === "classification") label = "Classifying requests and steering";
-	if (progress.phase === "themes") label = "Applying repository analysis skill";
+	if (progress.phase === "repositories")
+		label = "Resolving and inventorying repositories";
+	if (progress.phase === "classification")
+		label = "Classifying requests and steering";
+	if (progress.phase === "analysis") label = "Drafting repository issues";
 	return [
 		"",
 		"  Pi Repository Insights",
@@ -86,7 +91,10 @@ function availableModels(
 		const bRank = preferredOrder.indexOf(b.id);
 		const normalizedARank = aRank < 0 ? preferredOrder.length : aRank;
 		const normalizedBRank = bRank < 0 ? preferredOrder.length : bRank;
-		return normalizedARank - normalizedBRank || modelLabel(a).localeCompare(modelLabel(b));
+		return (
+			normalizedARank - normalizedBRank ||
+			modelLabel(a).localeCompare(modelLabel(b))
+		);
 	});
 }
 
@@ -108,7 +116,9 @@ function defaultModel(
 		: undefined;
 	if (active) return active;
 	if (available[0]) return available[0];
-	throw new Error(`No authenticated ${role} model is available in the ${catalog} catalog`);
+	throw new Error(
+		`No authenticated ${role} model is available in the ${catalog} catalog`,
+	);
 }
 
 function defaultClassifierModel(
@@ -138,9 +148,15 @@ function resolveModel(
 	);
 }
 
-function persistSettings(ctx: ExtensionCommandContext, settings: InsightsSettings): void {
+function persistSettings(
+	ctx: ExtensionCommandContext,
+	settings: InsightsSettings,
+): void {
 	if (!saveInsightsSettings(settings)) {
-		ctx.ui.notify("Settings changed for this run but could not be saved", "warning");
+		ctx.ui.notify(
+			"Settings changed for this run but could not be saved",
+			"warning",
+		);
 	}
 }
 
@@ -155,13 +171,14 @@ async function showConfigurationPanel(
 				currentValue: string,
 				close: (selectedValue?: string) => void,
 			) => {
-				const modelItems: SelectItem[] = availableModels(ctx, settings.modelCatalog).map(
-					(model) => ({
-						value: modelLabel(model),
-						label: model.id,
-						description: model.provider,
-					}),
-				);
+				const modelItems: SelectItem[] = availableModels(
+					ctx,
+					settings.modelCatalog,
+				).map((model) => ({
+					value: modelLabel(model),
+					label: model.id,
+					description: model.provider,
+				}));
 				const modelList = new SelectList(
 					modelItems,
 					Math.min(modelItems.length, 12),
@@ -186,7 +203,8 @@ async function showConfigurationPanel(
 				{
 					id: "historyWindow",
 					label: "History window",
-					description: "Chronological user prompts to consider before the global input cap",
+					description:
+						"Chronological user prompts to consider before the global input cap",
 					currentValue: settings.historyWindow,
 					values: [...HISTORY_WINDOWS],
 				},
@@ -200,7 +218,8 @@ async function showConfigurationPanel(
 				{
 					id: "modelCatalog",
 					label: "Model catalog",
-					description: "Scoped follows Pi's scoped models; all shows every authenticated model",
+					description:
+						"Scoped follows Pi's scoped models; all shows every authenticated model",
 					currentValue: settings.modelCatalog,
 					values: [...MODEL_CATALOGS],
 				},
@@ -214,7 +233,8 @@ async function showConfigurationPanel(
 				{
 					id: "analysisModel",
 					label: "Repository analysis model",
-					description: "Applies the repository-analysis skill; defaults to gpt-5.6-luna",
+					description:
+						"Applies the repository-analysis skill; defaults to gpt-5.6-luna",
 					currentValue: settings.analysisModel,
 					submenu: modelSubmenu,
 				},
@@ -317,10 +337,13 @@ async function callModel(
 
 export default function repoInsightsExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("repo-insights", {
-		description: "Configure and run user-prompt steering analysis",
+		description: "Classify steering and draft grounded repository issues",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui") {
-				ctx.ui.notify("/repo-insights opens an interactive panel and requires TUI mode", "warning");
+				ctx.ui.notify(
+					"/repo-insights opens an interactive panel and requires TUI mode",
+					"warning",
+				);
 				return;
 			}
 			try {
@@ -423,7 +446,7 @@ export default function repoInsightsExtension(pi: ExtensionAPI): void {
 					(classification) => classification.kind === "steering",
 				).length;
 				ctx.ui.notify(
-					`Repository insights written:\n${markdownPath}\n${jsonPath}\n\n${report.sessions.promptsClassified} prompts classified; ${steeringCount} steering prompts`,
+					`Repository insights written:\n${markdownPath}\n${jsonPath}\n\n${report.sessions.promptsClassified} prompts classified; ${steeringCount} steering prompts; ${report.issues.length} issue drafts`,
 					"info",
 				);
 			} catch (error) {

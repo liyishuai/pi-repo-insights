@@ -7,21 +7,22 @@ import {
 	parseRepositoryAnalysis,
 } from "./skill-runtime.ts";
 import { resolveRepositoryAttribution } from "./repository-attribution.ts";
+import { buildRepositoryInventories } from "./repository-inventory.ts";
 import { analyzeSessionEntries } from "./session-analysis.ts";
 import type {
 	PromptClassification,
 	RepoInsightsReport,
 	ReportOptions,
+	RepositoryIssueDraft,
 	SessionEvidence,
 	SessionSource,
-	SteeringTheme,
 } from "./types.ts";
 
 export type AnalysisPhase =
 	| "sessions"
 	| "repositories"
 	| "classification"
-	| "themes"
+	| "analysis"
 	| "report";
 
 export type AnalysisProgress = {
@@ -139,10 +140,12 @@ export async function analyzeRepositoryHistory(
 ): Promise<RepoInsightsReport> {
 	const selected = selectedSources(sources, options);
 	const sessions = await loadSessions(selected, loadEntries, options);
-	options.onProgress?.({ phase: "repositories", completed: 0, total: 1 });
+	options.onProgress?.({ phase: "repositories", completed: 0, total: 2 });
 	const { repositories, repositoryKeysBySession } =
 		await resolveRepositoryAttribution(sessions);
-	options.onProgress?.({ phase: "repositories", completed: 1, total: 1 });
+	options.onProgress?.({ phase: "repositories", completed: 1, total: 2 });
+	const inventories = await buildRepositoryInventories(repositories);
+	options.onProgress?.({ phase: "repositories", completed: 2, total: 2 });
 
 	const plan = buildClassificationPlan(
 		sessions,
@@ -159,18 +162,20 @@ export async function analyzeRepositoryHistory(
 		classify,
 		options.onProgress,
 	);
-	const themeRequest = buildRepositoryAnalysisPrompt(
+	const repositoryAnalysisRequest = buildRepositoryAnalysisPrompt(
 		classifications,
+		repositories,
+		inventories,
 		repositoryAnalysisSkill,
 	);
-	let themes: SteeringTheme[] = [];
-	if (themeRequest) {
-		options.onProgress?.({ phase: "themes", completed: 0, total: 1 });
-		themes = parseRepositoryAnalysis(
-			await analyzeRepositoryInsights(themeRequest.prompt),
-			themeRequest.refs,
+	let issues: RepositoryIssueDraft[] = [];
+	if (repositoryAnalysisRequest) {
+		options.onProgress?.({ phase: "analysis", completed: 0, total: 1 });
+		issues = parseRepositoryAnalysis(
+			await analyzeRepositoryInsights(repositoryAnalysisRequest.prompt),
+			repositoryAnalysisRequest,
 		);
-		options.onProgress?.({ phase: "themes", completed: 1, total: 1 });
+		options.onProgress?.({ phase: "analysis", completed: 1, total: 1 });
 	}
 	options.onProgress?.({ phase: "report", completed: 1, total: 1 });
 	const reportOptions: ReportOptions = {
@@ -178,11 +183,12 @@ export async function analyzeRepositoryHistory(
 		maxSessions: options.maxSessions,
 	};
 	if (options.modelCatalog) reportOptions.modelCatalog = options.modelCatalog;
-	if (options.classifierModel) reportOptions.classifierModel = options.classifierModel;
+	if (options.classifierModel)
+		reportOptions.classifierModel = options.classifierModel;
 	if (options.analysisModel) reportOptions.analysisModel = options.analysisModel;
 
 	return {
-		schemaVersion: 2,
+		schemaVersion: 3,
 		generatedAt: (options.now ?? new Date()).toISOString(),
 		options: reportOptions,
 		classifierModel: options.classifierModel ?? "active model",
@@ -197,17 +203,19 @@ export async function analyzeRepositoryHistory(
 			promptInputTruncated: plan.truncated,
 		},
 		repositories,
+		inventories,
 		classifications,
-		themes,
+		issues,
 		methodology: [
 			"The packaged repo-insights-classifier skill defines the request-versus-steering rubric.",
-			"The packaged repo-insights-analyzer skill defines repository theme grouping and action synthesis.",
+			"The packaged repo-insights-analyzer skill consolidates one GitHub issue draft per repository.",
 			"Chronological user prompts are classified as requests, steering, responses, or other content.",
 			"A prompt that redirects current work and issues a new order is classified as steering; an initial desired outcome is classified as a request.",
-			"The classifier model receives selected user prompts, and the analysis model receives validated steering paraphrases for theme grouping.",
+			"The classifier model receives selected user prompts, and the analysis model receives validated steering paraphrases plus bounded repository inventories.",
 			"Git roots, origin remotes, explicit GitHub references, and tool path arguments attribute classifications to repositories.",
+			"Repository inventories cover top-level entries, manifests, CI files, validation entrypoints, and package script names.",
 			"Reports contain bounded model-generated paraphrases; host validation replaces any paraphrase that copies eight consecutive source words.",
-			"Repository actions describe scripts, checks, CI contracts, schemas, or documented interfaces supported by grouped steering evidence.",
+			"Each issue body states current status, impact on agent effectiveness, a proposed change, and acceptance criteria.",
 		],
 	};
 }
