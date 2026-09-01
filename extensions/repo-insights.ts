@@ -177,9 +177,9 @@ function persistSettings(
 async function showConfigurationPanel(
 	ctx: ExtensionCommandContext,
 	initial: InsightsSettings,
-): Promise<InsightsSettings | undefined> {
+): Promise<void> {
 	const settings = { ...initial };
-	const result = await ctx.ui.custom<"done" | undefined>(
+	await ctx.ui.custom<undefined>(
 		(tui, theme, _keybindings, done) => {
 			const modelSubmenu = (
 				currentValue: string,
@@ -252,13 +252,6 @@ async function showConfigurationPanel(
 					currentValue: settings.analysisModel,
 					submenu: modelSubmenu,
 				},
-				{
-					id: "done",
-					label: "Done",
-					description: "Save these global settings and close the panel",
-					currentValue: "Press Enter",
-					values: ["done"],
-				},
 			];
 
 			let list: SettingsList;
@@ -267,10 +260,6 @@ async function showConfigurationPanel(
 				items.length + 2,
 				getSettingsListTheme(),
 				(id, value) => {
-					if (id === "done") {
-						done("done");
-						return;
-					}
 					if (id === "historyWindow") {
 						settings.historyWindow = value as InsightsSettings["historyWindow"];
 					} else if (id === "maxSessions") {
@@ -325,9 +314,6 @@ async function showConfigurationPanel(
 			};
 		},
 	);
-	if (result !== "done") return undefined;
-	persistSettings(ctx, settings);
-	return settings;
 }
 
 async function callModel(
