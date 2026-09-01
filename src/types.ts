@@ -74,8 +74,7 @@ export type RepositoryInventory = {
 	truncated: boolean;
 };
 
-export type RepositoryIssueDraft = {
-	id: string;
+export type RepositoryIssueCandidate = {
 	repository: string;
 	title: string;
 	currentStatus: string;
@@ -84,9 +83,58 @@ export type RepositoryIssueDraft = {
 	acceptanceCriteria: string[];
 	body: string;
 	promptIds: string[];
+	searchQueries: string[];
 };
 
-export type ReportOptions = {
+export type GitHubThreadSummary = {
+	ref: string;
+	kind: "issue" | "pull_request";
+	number: number;
+	title: string;
+	url: string;
+	bodyExcerpt: string;
+	updatedAt?: string;
+};
+
+export type RepositoryThreadLookup = {
+	repository: string;
+	status: "success" | "failed" | "unsupported";
+	source?: "gh" | "rest";
+	query?: string;
+	threads: GitHubThreadSummary[];
+	error?: string;
+};
+
+export type RepositoryGuidanceFile = {
+	path: string;
+	content: string;
+};
+
+export type RepositoryGuidanceResult = {
+	repository: string;
+	status: "success" | "failed" | "unsupported";
+	source?: "local" | "gh" | "rest";
+	files: RepositoryGuidanceFile[];
+	error?: string;
+};
+
+export type RepositoryContributionDraft = {
+	id: string;
+	kind: "issue" | "existing";
+	repository: string;
+	title: string;
+	body: string;
+	labels: string[];
+	promptIds: string[];
+	existingThread?: {
+		kind: "issue" | "pull_request";
+		number: number;
+		title: string;
+		url: string;
+	};
+};
+
+export type AnalysisScopeOptions = {
 	sinceDays: number;
 	maxSessions: number;
 	modelCatalog?: "scoped" | "all";
@@ -94,12 +142,8 @@ export type ReportOptions = {
 	analysisModel?: string;
 };
 
-export type RepoInsightsReport = {
-	schemaVersion: 3;
-	generatedAt: string;
-	options: ReportOptions;
-	classifierModel: string;
-	analysisModel: string;
+export type RepoInsightsResult = {
+	analysisMode: "history" | "direction";
 	sessions: {
 		discovered: number;
 		analyzed: number;
@@ -112,6 +156,7 @@ export type RepoInsightsReport = {
 	repositories: RepositoryAttribution[];
 	inventories: RepositoryInventory[];
 	classifications: PromptClassification[];
-	issues: RepositoryIssueDraft[];
-	methodology: string[];
+	threadLookups: RepositoryThreadLookup[];
+	guidanceResults: RepositoryGuidanceResult[];
+	contributions: RepositoryContributionDraft[];
 };

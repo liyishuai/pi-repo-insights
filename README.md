@@ -1,8 +1,10 @@
 # pi-repo-insights
 
-A Pi package that reviews historical **user prompts**, distinguishes new requests from corrective steering, and drafts grounded repository issues for the repositories involved.
+A Pi package that turns repository friction into reviewable GitHub issue proposals.
 
-The central question is: _where did the user indicate that the agent's current approach was wrong?_ A forceful initial order is still a request; a later prompt that rejects, corrects, narrows, stops, or replaces the work is steering.
+With no direction, it reviews historical **user prompts**, distinguishes new requests from corrective steering, and finds repository-owned changes that could reduce repeated correction or rework. With a direction, it analyzes that direction against the current repository without reading or classifying session history.
+
+Before proposing anything, the analyzer reads the repository's contribution guidance and issue templates and searches its open GitHub issues and pull requests. It never posts comments. It creates an issue only after showing the complete proposal and receiving explicit approval.
 
 ## Install
 
@@ -24,78 +26,117 @@ To try the extension without adding it to settings:
 pi -e git:github.com/liyishuai/pi-repo-insights
 ```
 
-Reload Pi after installation, then run `/repo-insights`.
+Reload Pi after installation.
 
-## Usage
+## Commands
 
-Run one command with no arguments:
+### Configure
+
+```text
+/repo-insights-config
+```
+
+This is the only command that opens the configuration panel. It controls:
+
+- **History window** — all history or the last 7, 30, 90, 180, or 365 days;
+- **Session limit** — 25, 50, 100, 200, 500, or 1,000 recent sessions;
+- **Model catalog** — `scoped` follows Pi's scoped models, while `all` shows every authenticated model;
+- **Classifier model** — defaults to `openai-codex/gpt-5.3-codex-spark`; and
+- **Repository analysis model** — defaults to `openai-codex/gpt-5.6-luna`.
+
+Selections are stored globally in `~/.pi/agent/repo-insights/config.json`, or the equivalent path under `PI_CODING_AGENT_DIR`. If a configured model is unavailable, the extension falls back to an available Pi model.
+
+### Analyze historical steering
 
 ```text
 /repo-insights
 ```
 
-The command opens an interactive configuration panel with five fields:
+The command runs immediately using the saved configuration. It loads bounded session history, classifies chronological human prompts, and analyzes validated steering attributed to repositories.
 
-- **History window** — all history or the last 7, 30, 90, 180, or 365 days;
-- **Session limit** — 25, 50, 100, 200, 500, or 1,000 recent sessions;
-- **Model catalog** — `scoped` follows Pi's scoped models (or all models when no scope is configured), while `all` always shows every authenticated model;
-- **Classifier model** — classifies each prompt, defaulting to `openai-codex/gpt-5.3-codex-spark`; and
-- **Repository analysis model** — drafts one consolidated issue per supported repository, defaulting to `openai-codex/gpt-5.6-luna`.
-
-Select **Run analysis** in the panel to start. Selections are remembered globally in `~/.pi/agent/repo-insights/config.json` (or the equivalent path under `PI_CODING_AGENT_DIR`). If a preferred model is unavailable, the extension falls back to Pi's active model.
-
-Reports are written to:
+### Analyze an explicit direction
 
 ```text
-~/.pi/agent/repo-insights/report.md
-~/.pi/agent/repo-insights/report.json
+/repo-insights improve the repository's canonical validation guidance
 ```
 
-The Markdown report summarizes class counts and provides one copy-ready GitHub issue draft per supported repository. Each issue body explains the relevant current repository or infrastructure status, its impact on agent effectiveness, a proposed change, and testable acceptance criteria. The schema-versioned JSON report retains classifications, bounded repository inventories, and structured issue drafts.
+Any non-empty sentence after the command is treated as the analysis direction. This path skips session loading and prompt classification entirely and analyzes the current repository directly.
 
-## Models and classification skill
+Do not pass flags; the optional input is natural-language direction.
 
-Every included chronological user prompt receives one primary class:
+## Interactive issue flow
+
+For each candidate, the extension:
+
+1. builds a bounded structural inventory of the repository;
+2. asks the analyzer skill to call `inspect_repository_guidance`, which reads contribution guidelines and issue templates locally when possible and from GitHub otherwise;
+3. asks the skill to call `search_open_github_threads` with bounded semantic searches covering both open issues and open pull requests;
+4. stops and cites the closest relevant open thread when one already covers the proposed change;
+5. otherwise prepares one issue title, body, and any template-requested labels;
+6. shows the complete proposal in a confirmation dialog; and
+7. submits it only if the user explicitly approves.
+
+Multiple proposals are shown and approved sequentially. Declining one proposal makes no GitHub write and does not prevent the next proposal from being shown.
+
+The extension never creates issue or pull-request comments. A relevant open pull request counts as an existing contribution thread and prevents a duplicate issue.
+
+A new issue is suppressed when thread discovery or guidance inspection fails, because the analyzer has not established that the contribution is both non-duplicative and repository-compliant.
+
+## GitHub access
+
+Read and write operations try authenticated [`gh`](https://cli.github.com/) first:
+
+```bash
+gh auth login
+```
+
+Open-thread discovery falls back to public GitHub REST access. If `gh` is unavailable or not authenticated, issue creation can fall back to GitHub REST when `GH_TOKEN` or `GITHUB_TOKEN` is available. Ambiguous write failures are not retried, avoiding accidental duplicate issues. The fallback token needs permission to create issues in the target repository.
+
+## Models and packaged skills
+
+Every included chronological human prompt receives one primary class:
 
 - **request** — a new or additive order, desired outcome, preference, or question;
-- **steering** — a reaction to current or previous agent behavior that rejects, corrects, redirects, narrows, expands, stops, or replaces the approach;
+- **steering** — a reaction that rejects, corrects, redirects, narrows, expands, stops, or replaces the current approach;
 - **response** — information, approval, or a choice supplied because the agent asked;
 - **other** — acknowledgement, status-only content, or content outside those classes; or
-- **unclear** — the classifier omitted or malformed the result.
+- **unclear** — an omitted or malformed classification.
 
-If a prompt both redirects the agent and gives a new order, steering takes priority. Steering is further classified as course correction, scope reassertion, frustration, missed requirement, unwanted action, premature completion, or evidence challenge.
+A forceful initial order remains a request. When a prompt both redirects current work and adds a new order, steering takes priority.
 
-Two packaged Agent Skills define the semantic work:
+Two portable Agent Skills define the semantic behavior:
 
-- `skills/repo-insights-classifier/SKILL.md` classifies requests, steering, responses, and other prompts.
-- `skills/repo-insights-analyzer/SKILL.md` combines repository-attributed steering with a bounded structural inventory and drafts grounded repository issues.
+- `skills/repo-insights-classifier/SKILL.md` classifies chronological human prompts.
+- `skills/repo-insights-analyzer/SKILL.md` supports candidate, direction, and audit modes; it owns the open-thread audit and contribution-guidance rules.
 
-Pi discovers them as `/skill:repo-insights-classifier` and `/skill:repo-insights-analyzer`. Their frontmatter, input contracts, decision rules, and JSON outputs are self-contained, so another Agent Skills-compatible framework can copy or reference either skill directory directly. `extensions/repo-insights.ts` is the Pi adapter for session loading, the configuration panel, model selection, and report writing.
+Pi discovers them as `/skill:repo-insights-classifier` and `/skill:repo-insights-analyzer`. Another Agent Skills-compatible framework can copy or reference either skill directory. To use analyzer audit mode portably, the host must provide tools equivalent to `search_open_github_threads` and `inspect_repository_guidance`.
 
-Classification runs as bounded, stateless model tasks on Spark by default. Validated steering paraphrases and bounded repository inventories are passed to the separate Luna repository-analysis task. Prompt batches are limited to 160 prompts and 40,000 prompt characters. A run submits at most 500 prompts and 120,000 prompt characters; the report marks truncated coverage.
+Pi-specific code is limited to session access, configuration and confirmation UI, model calls, bounded GitHub transport, and approved issue submission.
 
-## Repository attribution
+Classification runs as bounded stateless model calls. Batches are limited to 160 prompts and 40,000 prompt characters. A historical run submits at most 500 prompts and 120,000 prompt characters.
 
-Repository facts are used only after prompt classification:
+## Repository discovery
+
+For historical analysis:
 
 1. Session working directories and tool path arguments identify candidate local Git roots.
 2. Origin remotes and explicit GitHub references consolidate checkouts under one repository identity.
-3. Prompt classifications inherit the repositories associated with their session.
-4. A bounded read-only inventory records top-level entries, manifests, CI files, validation entrypoints, and package script names. Each local inventory visits at most 10,000 entries and 5,000 files to a depth of three.
-5. The repository-analysis skill uses attributed steering plus that inventory to draft at most one grounded issue per repository.
+3. Prompt classifications inherit repositories associated with their session.
+4. A bounded read-only inventory records top-level entries, manifests, CI files, validation entrypoints, and package-script names.
+5. The analyzer produces at most one candidate per repository.
+
+Each local inventory visits at most 10,000 entries and 5,000 files to a depth of three. Direct-direction analysis uses the current working repository and the same inventory rules.
 
 ## Privacy and boundaries
 
-- Classifier input consists of selected chronological user prompts.
-- Analysis input consists of validated steering paraphrases and bounded repository inventories.
-- Inventories contain relative entry names and package-script keys rather than repository source contents.
-- The Markdown report contains synthesized issue drafts; the JSON report contains validated paraphrases rather than raw prompt text.
-- Host validation replaces a paraphrase if it copies eight consecutive words from its source prompt.
-- Repository attribution resolves local Git roots and origin remotes without a GitHub API call.
-- The JSON report includes local paths and repository identities for attribution.
-- The two packaged Agent Skills provide the portable classification and repository-analysis contracts.
-
-The current report schema is `schemaVersion: 3`.
+- Behavioral classification uses only selected chronological human prompts.
+- Raw prompts are submitted transiently for classification but are not persisted by this package.
+- Candidate analysis receives validated paraphrases and bounded repository inventories.
+- Audit analysis receives bounded open-thread excerpts, contribution guidelines, and issue templates.
+- Host validation rejects a paraphrase that copies eight consecutive words from its source prompt.
+- No Markdown or JSON analysis report is written.
+- Only the global configuration file is persisted.
+- No GitHub write occurs without a proposal-specific confirmation.
 
 ## Development
 
@@ -104,13 +145,16 @@ Requires Node.js 22.19 or newer.
 ```bash
 npm ci
 npm run check
+npm pack --dry-run
 ```
 
-Load the extension directly, then enter `/repo-insights` to inspect the configuration panel and run it:
+Load the extension directly:
 
 ```bash
 pi --no-extensions --extension ./extensions/repo-insights.ts
 ```
+
+Then use `/repo-insights-config`, `/repo-insights`, or `/repo-insights <direction>`.
 
 ## License
 

@@ -1,12 +1,12 @@
 {
   "name": "pi-repo-insights",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "exports": {
     "./skills/repo-insights-classifier": "./skills/repo-insights-classifier/SKILL.md",
     "./skills/repo-insights-analyzer": "./skills/repo-insights-analyzer/SKILL.md"
   },
-  "description": "Classify user steering and derive repository insights from Pi session history",
+  "description": "Audit repository friction and propose approval-gated GitHub issues in Pi",
   "license": "MPL-2.0",
   "homepage": "https://github.com/liyishuai/pi-repo-insights",
   "repository": {

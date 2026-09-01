@@ -4,8 +4,11 @@ import type {
 	PromptClassification,
 	PromptKind,
 	RepositoryAttribution,
+	RepositoryContributionDraft,
+	RepositoryGuidanceResult,
 	RepositoryInventory,
-	RepositoryIssueDraft,
+	RepositoryIssueCandidate,
+	RepositoryThreadLookup,
 	SessionEvidence,
 	SteeringCategory,
 } from "./types.ts";
@@ -67,7 +70,7 @@ type RawClassification = {
 	expected_behavior?: string | null;
 };
 
-type RawIssue = {
+type RawIssueCandidate = {
 	repository?: string | null;
 	title?: string | null;
 	classification_refs?: string[];
@@ -75,11 +78,22 @@ type RawIssue = {
 	agent_impact?: string | null;
 	proposal?: string[];
 	acceptance_criteria?: string[];
+	search_queries?: string[];
+};
+
+type RawContributionDecision = {
+	kind?: string | null;
+	thread_ref?: string | null;
+	reason?: string | null;
+	title?: string | null;
+	issue_body?: string | null;
+	labels?: string[];
 };
 
 type RawModelResponse = {
 	classifications?: RawClassification[];
-	issues?: RawIssue[];
+	candidates?: RawIssueCandidate[];
+	decision?: RawContributionDecision;
 };
 
 function boundedText(
@@ -385,6 +399,7 @@ export type RepositoryAnalysisRequest = {
 	prompt: string;
 	refs: Map<string, PromptClassification>;
 	repositoryKeys: Set<string>;
+	requireEvidenceRefs: boolean;
 };
 
 export function buildRepositoryAnalysisPrompt(
@@ -443,10 +458,7 @@ export function buildRepositoryAnalysisPrompt(
 					top_level_files: limited(inventory.topLevelFiles, 20),
 					manifests: limited(inventory.manifests, 25),
 					ci_files: limited(inventory.ciFiles, 25),
-					validation_entrypoints: limited(
-						inventory.validationEntrypoints,
-						30,
-					),
+					validation_entrypoints: limited(inventory.validationEntrypoints, 30),
 					package_scripts: limited(inventory.packageScripts, 30),
 					files_visited: inventory.filesVisited,
 					scan_truncated: inventory.truncated || mode === "compact",
@@ -454,16 +466,10 @@ export function buildRepositoryAnalysisPrompt(
 			};
 		};
 		let line = JSON.stringify(repositoryContext("full"));
-		if (
-			inventoryCharacters + line.length >
-			MAX_ANALYSIS_INVENTORY_CHARACTERS
-		) {
+		if (inventoryCharacters + line.length > MAX_ANALYSIS_INVENTORY_CHARACTERS) {
 			line = JSON.stringify(repositoryContext("compact"));
 		}
-		if (
-			inventoryCharacters + line.length >
-			MAX_ANALYSIS_INVENTORY_CHARACTERS
-		) {
+		if (inventoryCharacters + line.length > MAX_ANALYSIS_INVENTORY_CHARACTERS) {
 			line = JSON.stringify(repositoryContext("summary"));
 		}
 		inventoryCharacters += line.length;
@@ -474,7 +480,8 @@ export function buildRepositoryAnalysisPrompt(
 		repositoryKeys: new Set(
 			relevantRepositories.map((repository) => repository.key),
 		),
-		prompt: `Apply the packaged repository-analysis skill below. Return only the JSON required by the skill.
+		requireEvidenceRefs: true,
+		prompt: `Apply the packaged repository-analysis skill below in CANDIDATE MODE. Return only the JSON required by the skill.
 
 BEGIN PACKAGED SKILL
 ${analysisSkill}
@@ -483,6 +490,57 @@ END PACKAGED SKILL
 BEGIN STEERING CLASSIFICATIONS
 ${classificationLines.join("\n")}
 END STEERING CLASSIFICATIONS
+
+BEGIN REPOSITORY INVENTORIES
+${repositoryLines.join("\n")}
+END REPOSITORY INVENTORIES`,
+	};
+}
+
+export function buildDirectionAnalysisPrompt(
+	direction: string,
+	repositories: RepositoryAttribution[],
+	inventories: RepositoryInventory[],
+	analysisSkill: string,
+): RepositoryAnalysisRequest | undefined {
+	const boundedDirection = direction.trim().slice(0, 4_000);
+	if (!boundedDirection || repositories.length === 0) return undefined;
+	const inventoryByRepository = new Map(
+		inventories.map((inventory) => [inventory.repository, inventory]),
+	);
+	const repositoryLines = repositories.map((repository) => {
+		const inventory = inventoryByRepository.get(repository.key);
+		return JSON.stringify({
+			repository: repository.key,
+			checkout_count: repository.checkoutCount,
+			attributed_session_count: repository.sessionIds.length,
+			inventory: inventory
+				? {
+						top_level_directories: inventory.topLevelDirectories,
+						top_level_files: inventory.topLevelFiles,
+						manifests: inventory.manifests,
+						ci_files: inventory.ciFiles,
+						validation_entrypoints: inventory.validationEntrypoints,
+						package_scripts: inventory.packageScripts,
+						files_visited: inventory.filesVisited,
+						scan_truncated: inventory.truncated,
+					}
+				: null,
+		});
+	});
+	return {
+		refs: new Map(),
+		repositoryKeys: new Set(repositories.map((repository) => repository.key)),
+		requireEvidenceRefs: false,
+		prompt: `Apply the packaged repository-analysis skill below in DIRECTION MODE. Do not classify the direction. Return only the JSON required by the skill.
+
+BEGIN PACKAGED SKILL
+${analysisSkill}
+END PACKAGED SKILL
+
+BEGIN ANALYSIS DIRECTION
+${JSON.stringify(boundedDirection)}
+END ANALYSIS DIRECTION
 
 BEGIN REPOSITORY INVENTORIES
 ${repositoryLines.join("\n")}
@@ -522,12 +580,12 @@ function boundedList(value: string[] | undefined, maxItems: number): string[] {
 		.slice(0, maxItems);
 }
 
-function groupRawIssues(
-	rawIssues: RawIssue[],
+function groupRawCandidates(
+	rawCandidates: RawIssueCandidate[],
 	repositoryKeys: Set<string>,
-): Map<string, RawIssue[]> {
-	const grouped = new Map<string, RawIssue[]>();
-	for (const raw of rawIssues.slice(0, 100)) {
+): Map<string, RawIssueCandidate[]> {
+	const grouped = new Map<string, RawIssueCandidate[]>();
+	for (const raw of rawCandidates.slice(0, 100)) {
 		const repository = boundedText(raw?.repository, "", 300);
 		if (!repository || !repositoryKeys.has(repository)) continue;
 		const group = grouped.get(repository) ?? [];
@@ -539,7 +597,7 @@ function groupRawIssues(
 
 function referencedClassifications(
 	repository: string,
-	drafts: RawIssue[],
+	drafts: RawIssueCandidate[],
 	refs: Map<string, PromptClassification>,
 ): PromptClassification[] {
 	const byId = new Map<string, PromptClassification>();
@@ -558,7 +616,7 @@ function referencedClassifications(
 }
 
 function mergedIssueText(
-	drafts: RawIssue[],
+	drafts: RawIssueCandidate[],
 	field: "current_status" | "agent_impact",
 	maxLength: number,
 ): string {
@@ -570,12 +628,12 @@ function mergedIssueText(
 		.join("\n\n");
 }
 
-function issueFromDrafts(
+function candidateFromDrafts(
 	repository: string,
-	drafts: RawIssue[],
+	drafts: RawIssueCandidate[],
 	refs: Map<string, PromptClassification>,
-	index: number,
-): RepositoryIssueDraft | undefined {
+	requireEvidenceRefs: boolean,
+): RepositoryIssueCandidate | undefined {
 	const first = drafts[0];
 	if (!first) return undefined;
 	const title = boundedText(first.title, "", 160);
@@ -589,6 +647,11 @@ function issueFromDrafts(
 			drafts.flatMap((draft) => boundedList(draft.acceptance_criteria, 15)),
 		),
 	].slice(0, 15);
+	const searchQueries = [
+		...new Set(
+			drafts.flatMap((draft) => boundedList(draft.search_queries, 3)),
+		),
+	].slice(0, 3);
 	const classifications = referencedClassifications(repository, drafts, refs);
 	if (
 		!title ||
@@ -596,12 +659,12 @@ function issueFromDrafts(
 		!agentImpact ||
 		proposal.length === 0 ||
 		acceptanceCriteria.length === 0 ||
-		classifications.length === 0
+		searchQueries.length === 0 ||
+		(requireEvidenceRefs && classifications.length === 0)
 	) {
 		return undefined;
 	}
 	return {
-		id: `issue-${index}`,
 		repository,
 		title,
 		currentStatus,
@@ -610,19 +673,137 @@ function issueFromDrafts(
 		acceptanceCriteria,
 		body: issueBody(currentStatus, agentImpact, proposal, acceptanceCriteria),
 		promptIds: classifications.map((classification) => classification.id),
+		searchQueries,
 	};
 }
 
-export function parseRepositoryAnalysis(
+export function parseRepositoryCandidates(
 	text: string,
 	request: RepositoryAnalysisRequest,
-): RepositoryIssueDraft[] {
+): RepositoryIssueCandidate[] {
 	const parsed = parseJsonObject(text);
-	const rawIssues = Array.isArray(parsed.issues) ? parsed.issues : [];
-	const grouped = groupRawIssues(rawIssues, request.repositoryKeys);
-	const issues = [...grouped].flatMap(([repository, drafts], index) => {
-		const issue = issueFromDrafts(repository, drafts, request.refs, index + 1);
-		return issue ? [issue] : [];
+	const rawCandidates = Array.isArray(parsed.candidates)
+		? parsed.candidates
+		: [];
+	const grouped = groupRawCandidates(rawCandidates, request.repositoryKeys);
+	const candidates = [...grouped].flatMap(([repository, drafts]) => {
+		const candidate = candidateFromDrafts(
+			repository,
+			drafts,
+			request.refs,
+			request.requireEvidenceRefs,
+		);
+		return candidate ? [candidate] : [];
 	});
-	return issues.sort((a, b) => a.repository.localeCompare(b.repository));
+	return candidates.sort((a, b) => a.repository.localeCompare(b.repository));
+}
+
+export type RepositoryAuditRequest = {
+	prompt: string;
+	candidate: RepositoryIssueCandidate;
+};
+
+export function buildRepositoryAuditPrompt(
+	candidate: RepositoryIssueCandidate,
+	analysisSkill: string,
+): RepositoryAuditRequest {
+	return {
+		candidate,
+		prompt: `Apply the packaged repository-analysis skill below in AUDIT MODE. Use the search_open_github_threads tool directly, then return only the JSON required by the skill.
+
+BEGIN PACKAGED SKILL
+${analysisSkill}
+END PACKAGED SKILL
+
+BEGIN CANDIDATE CONTRIBUTION
+${JSON.stringify({
+	repository: candidate.repository,
+	title: candidate.title,
+	current_status: candidate.currentStatus,
+	agent_impact: candidate.agentImpact,
+	proposal: candidate.proposal,
+	acceptance_criteria: candidate.acceptanceCriteria,
+	suggested_search_queries: candidate.searchQueries,
+})}
+END CANDIDATE CONTRIBUTION`,
+	};
+}
+
+function boundedMarkdown(value: string | null | undefined, maxLength: number): string {
+	return String(value ?? "")
+		.replaceAll("\u0000", "")
+		.replaceAll("\r\n", "\n")
+		.trim()
+		.slice(0, maxLength);
+}
+
+export function parseRepositoryContribution(
+	text: string,
+	request: RepositoryAuditRequest,
+	lookups: RepositoryThreadLookup[],
+	guidance: RepositoryGuidanceResult[],
+	index: number,
+): RepositoryContributionDraft | undefined {
+	const decision = parseJsonObject(text).decision;
+	if (!decision) return undefined;
+	const successfulLookups = lookups.filter(
+		(lookup) => lookup.status === "success",
+	);
+	if (decision.kind === "issue") {
+		const auditComplete =
+			lookups.length > 0 &&
+			lookups.every((lookup) => lookup.status === "success");
+		const guidanceAvailable = guidance.some(
+			(result) => result.status === "success",
+		);
+		const title = boundedText(decision.title, "", 160);
+		const body = boundedMarkdown(decision.issue_body, 12_000);
+		const guidanceText = guidance
+			.flatMap((result) => result.files.map((file) => file.content))
+			.join("\n")
+			.toLowerCase();
+		const labels = boundedList(decision.labels, 10)
+			.map((label) => label.slice(0, 100))
+			.filter((label) => guidanceText.includes(label.toLowerCase()));
+		if (!auditComplete || !guidanceAvailable || !title || !body) {
+			return undefined;
+		}
+		return {
+			id: `contribution-${index}`,
+			kind: "issue",
+			repository: request.candidate.repository,
+			title,
+			body,
+			labels,
+			promptIds: request.candidate.promptIds,
+		};
+	}
+	if (decision.kind !== "existing") return undefined;
+	const threadsByRef = new Map(
+		successfulLookups.flatMap((lookup) =>
+			lookup.threads.map((thread) => [thread.ref, thread] as const),
+		),
+	);
+	const thread = threadsByRef.get(String(decision.thread_ref ?? ""));
+	if (!thread) return undefined;
+	const threadLabel = thread.kind === "pull_request" ? "pull request" : "issue";
+	return {
+		id: `contribution-${index}`,
+		kind: "existing",
+		repository: request.candidate.repository,
+		title: `Existing ${threadLabel} #${thread.number}: ${thread.title}`,
+		labels: [],
+		body: boundedText(
+			decision.reason,
+			"This open thread already covers the proposed repository change.",
+			1_000,
+		),
+		promptIds: request.candidate.promptIds,
+		existingThread: {
+			kind: thread.kind,
+			number: thread.number,
+			title: thread.title,
+			url: thread.url,
+		},
+	};
 }
